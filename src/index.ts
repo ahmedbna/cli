@@ -1,0 +1,37 @@
+#!/usr/bin/env node
+
+import { Command } from 'commander';
+import { initCommand } from './commands/init';
+import { logger } from './utils/logger';
+
+const program = new Command();
+
+program
+  .name('bna')
+  .description('BNA - Expo React Native UI, CLI Library')
+  .version('1.0.0');
+
+program
+  .command('init')
+  .description('Initialize a new BNA project')
+  .argument('[project-name]', 'Name of the project')
+  .option('-t, --template <template>', 'Template to use', 'default')
+  .option('--npm', 'Use npm as package manager')
+  .option('--yarn', 'Use yarn as package manager')
+  .option('--pnpm', 'Use pnpm as package manager')
+  .option('--skip-install', 'Skip package installation')
+  .action(initCommand);
+
+program.parse();
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error);
+  process.exit(1);
+});
