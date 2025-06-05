@@ -1,19 +1,25 @@
 import inquirer from 'inquirer';
 import ora from 'ora';
 import path from 'path';
-import { logger } from '../utils/logger';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import { logger } from '../utils/logger.js';
 import {
   validateProjectName,
   validateProjectPath,
   sanitizeProjectName,
-} from '../utils/validation';
-import { copyTemplate, replaceInFile } from '../utils/filesystem';
+} from '../utils/validation.js';
+import { copyTemplate, replaceInFile } from '../utils/filesystem.js';
 import {
   detectPackageManager,
   installDependencies,
   getRunCommand,
   type PackageManager,
-} from '../utils/package-manager';
+} from '../utils/package-manager.js';
+
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 interface InitOptions {
   template?: string;
@@ -97,7 +103,7 @@ export async function initCommand(
 
     try {
       // Copy template files
-      const templatePath = path.join(__dirname, '../templates');
+      const templatePath = path.join(__dirname, '../../templates');
       await copyTemplate(templatePath, projectPath);
 
       // Update package.json

@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
-import { logger } from './logger';
+import ora from 'ora';
+import { logger } from './logger.js';
 
 export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 
@@ -48,16 +49,19 @@ export async function installDependencies(
 ): Promise<void> {
   const installCommand = getInstallCommand(packageManager);
 
-  logger.info(`Installing dependencies with ${packageManager}...`);
+  const spinner = ora(
+    `Installing dependencies with ${packageManager}...`
+  ).start();
 
   try {
     execSync(installCommand, {
       cwd: projectPath,
-      stdio: 'inherit',
+      stdio: 'pipe',
     });
-    logger.success('Dependencies installed successfully!');
+    spinner.succeed('Dependencies installed successfully!');
   } catch (error) {
-    logger.error('Failed to install dependencies:', error);
+    spinner.fail('Failed to install dependencies');
+    logger.error('Installation error:', error);
     throw error;
   }
 }

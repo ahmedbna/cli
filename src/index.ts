@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { initCommand } from './commands/init';
-import { logger } from './utils/logger';
+import { initCommand } from './commands/init.js';
+import { logger } from './utils/logger.js';
 
 const program = new Command();
 

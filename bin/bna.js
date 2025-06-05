@@ -18,5 +18,10 @@ if (!fs.existsSync(distPath)) {
   process.exit(1);
 }
 
-// Import the built CLI module
-import(distPath);
+// Import and execute the built CLI module
+try {
+  await import(distPath);
+} catch (error) {
+  console.error('❌ Failed to start CLI:', error.message);
+  process.exit(1);
+}
