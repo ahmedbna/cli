@@ -2,7 +2,7 @@
   "name": "bna",
   "version": "1.0.0",
   "type": "module",
-  "description": "BNA - Expo React Native UI, CLI Library for rapid app development",
+  "description": "BNA - Expo React Native CLI for rapid app development",
   "main": "dist/index.js",
   "bin": {
     "bna": "bin/bna.js"
@@ -11,7 +11,9 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rm -rf dist"
   },
   "keywords": [
     "react-native",
@@ -20,22 +22,24 @@
     "template",
     "starter",
     "ui",
-    "boilerplate"
+    "boilerplate",
+    "typescript"
   ],
-  "author": "Your Name",
+  "author": "Your Name <your.email@example.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/bna-cli.git"
+    "url": "https://github.com/ahmedbna/cli.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/bna-cli/issues"
+    "url": "https://github.com/ahmedbna/cli/issues"
   },
-  "homepage": "https://github.com/yourusername/bna-cli#readme",
+  "homepage": "https://github.com/ahmedbna/cli#readme",
   "files": [
     "dist/",
     "bin/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=16.0.0"
@@ -53,6 +57,9 @@
     "@types/inquirer": "^9.0.7",
     "@types/node": "^20.8.0",
     "@types/validate-npm-package-name": "^4.0.2",
-    "typescript": "^5.2.2"
+    "typescript": "^5.2.2",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0"
   }
 }
