@@ -1,5 +1,17 @@
 import chalk from 'chalk';
 
+// ASCII Art for BNA
+const bnaBanner = `
+${chalk.cyan('██████╗ ███╗   ██╗ █████╗ ')}
+${chalk.cyan('██╔══██╗████╗  ██║██╔══██╗')}
+${chalk.cyan('██████╔╝██╔██╗ ██║███████║')}
+${chalk.cyan('██╔══██╗██║╚██╗██║██╔══██║')}
+${chalk.cyan('██████╔╝██║ ╚████║██║  ██║')}
+${chalk.cyan('╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝')}
+
+${chalk.gray('Expo React Native UI, CLI Library')}
+`;
+
 export const logger = {
   info: (message: string, ...args: any[]) => {
     console.log(chalk.blue('ℹ'), message, ...args);
@@ -29,6 +41,10 @@ export const logger = {
 
   header: (message: string) => {
     console.log('\n' + chalk.bold.cyan(message) + '\n');
+  },
+
+  banner: () => {
+    console.log(bnaBanner);
   },
 
   newline: () => {

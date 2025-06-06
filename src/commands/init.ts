@@ -34,6 +34,8 @@ export async function initCommand(
   projectName?: string,
   options: InitOptions = {}
 ) {
+  // Show the banner first
+  logger.banner();
   logger.header('🚀 Welcome to BNA - Expo React Native Starter');
 
   try {

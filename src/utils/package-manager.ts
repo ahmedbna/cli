@@ -43,10 +43,16 @@ export function detectPackageManagerFromInvocation(): PackageManager {
 
   // Check process argv for dlx/bunx patterns
   const argv = process.argv.join(' ');
-  if (argv.includes('pnpm dlx')) return 'pnpm';
-  if (argv.includes('yarn dlx')) return 'yarn';
-  if (argv.includes('bunx')) return 'bun';
-  if (argv.includes('npx')) return 'npm';
+  if (argv.includes('pnpm dlx') || argv.includes('pnpm/dlx')) return 'pnpm';
+  if (argv.includes('yarn dlx') || argv.includes('yarn/dlx')) return 'yarn';
+  if (argv.includes('bunx') || argv.includes('bun/') || process.env.BUN_INSTALL)
+    return 'bun';
+  if (argv.includes('npx') || argv.includes('npm/')) return 'npm';
+
+  // Additional check for process.env variables that might indicate the package manager
+  if (process.env.PNPM_HOME || process.env.PNPM_SCRIPT_SRC_DIR) return 'pnpm';
+  if (process.env.YARN_WRAP_OUTPUT) return 'yarn';
+  if (process.env.BUN_INSTALL) return 'bun';
 
   // Fallback to detection by availability
   return detectPackageManager();
@@ -87,14 +93,16 @@ export async function installDependencies(
 ): Promise<void> {
   const installCommand = getInstallCommand(packageManager);
 
-  const spinner = ora(
-    `Installing dependencies with ${packageManager}...`
-  ).start();
+  const spinner = ora({
+    text: `Installing dependencies with ${packageManager}...`,
+    spinner: 'dots',
+  }).start();
 
   try {
     execSync(installCommand, {
       cwd: projectPath,
       stdio: 'pipe',
+      timeout: 300000, // 5 minutes timeout
     });
     spinner.succeed('Dependencies installed successfully!');
   } catch (error) {
