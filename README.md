@@ -20,6 +20,6 @@ npm install -g bna
 # Create a new project
 bna init my-awesome-app
 
-# Or create with specific options
-bna init my-app --yarn --skip-install
+# Or create with
+npx bna init my-app
 ```
