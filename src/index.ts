@@ -19,6 +19,7 @@ program
   .option('--npm', 'Use npm as package manager')
   .option('--yarn', 'Use yarn as package manager')
   .option('--pnpm', 'Use pnpm as package manager')
+  .option('--bun', 'Use bun as package manager')
   .option('--skip-install', 'Skip package installation')
   .action(initCommand);
 

@@ -11,7 +11,7 @@ import {
 } from '../utils/validation.js';
 import { copyTemplate, replaceInFile } from '../utils/filesystem.js';
 import {
-  detectPackageManager,
+  detectPackageManagerFromInvocation,
   installDependencies,
   getRunCommand,
   type PackageManager,
@@ -26,6 +26,7 @@ interface InitOptions {
   npm?: boolean;
   yarn?: boolean;
   pnpm?: boolean;
+  bun?: boolean;
   skipInstall?: boolean;
 }
 
@@ -74,28 +75,17 @@ export async function initCommand(
       process.exit(1);
     }
 
-    // Determine package manager
+    // Determine package manager based on CLI flags or invocation method
     let packageManager: PackageManager;
 
     if (options.npm) packageManager = 'npm';
     else if (options.yarn) packageManager = 'yarn';
     else if (options.pnpm) packageManager = 'pnpm';
+    else if (options.bun) packageManager = 'bun';
     else {
-      const detected = detectPackageManager();
-      const answers = await inquirer.prompt([
-        {
-          type: 'list',
-          name: 'packageManager',
-          message: 'Which package manager would you like to use?',
-          choices: [
-            { name: 'npm', value: 'npm' },
-            { name: 'Yarn', value: 'yarn' },
-            { name: 'pnpm', value: 'pnpm' },
-          ],
-          default: detected,
-        },
-      ]);
-      packageManager = answers.packageManager;
+      // Detect from how the CLI was invoked
+      packageManager = detectPackageManagerFromInvocation();
+      logger.info(`Detected package manager: ${packageManager}`);
     }
 
     // Create project
@@ -103,7 +93,7 @@ export async function initCommand(
 
     try {
       // Copy template files
-      const templatePath = path.join(__dirname, '../../templates');
+      const templatePath = path.resolve(__dirname, '../../src/templates');
       await copyTemplate(templatePath, projectPath);
 
       // Update package.json
@@ -171,15 +161,16 @@ function showSuccessMessage(
   logger.plain(`  cd ${projectName}`);
 
   if (skipInstall) {
-    logger.plain(
-      `  ${
-        packageManager === 'npm'
-          ? 'npm install'
-          : packageManager === 'yarn'
-          ? 'yarn'
-          : 'pnpm install'
-      }`
-    );
+    const installCommand =
+      packageManager === 'npm'
+        ? 'npm install'
+        : packageManager === 'yarn'
+        ? 'yarn'
+        : packageManager === 'bun'
+        ? 'bun install'
+        : 'pnpm install';
+
+    logger.plain(`  ${installCommand}`);
   }
 
   logger.plain(`  ${getRunCommand(packageManager, 'start')}`);
