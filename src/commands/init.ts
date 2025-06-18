@@ -95,7 +95,7 @@ export async function initCommand(
 
     try {
       // Copy template files
-      const templatePath = path.resolve(__dirname, '../../src/templates');
+      const templatePath = path.resolve(__dirname, '../../src/templates/start');
       await copyTemplate(templatePath, projectPath);
 
       // Update package.json

@@ -1,6 +1,6 @@
 import { ComponentRegistry } from './schema.js';
-import textConfig from './components/ui/text.json' assert { type: 'json' };
-import viewConfig from './components/ui/view.json' assert { type: 'json' };
+import textConfig from './ui/text.json' assert { type: 'json' };
+import viewConfig from './ui/view.json' assert { type: 'json' };
 // ... import other components
 
 export const REGISTRY: Record<string, ComponentRegistry> = {
