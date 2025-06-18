@@ -1,0 +1,34 @@
+{
+  "name": "view",
+  "description": "A customizable button component with multiple variants",
+  "category": "ui",
+  "files": [
+    {
+      "name": "button.tsx",
+      "content": "button.tsx",
+      "type": "component",
+      "target": "components/ui/button.tsx"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "class-variance-authority",
+      "version": "^0.7.0"
+    },
+    {
+      "name": "clsx",
+      "version": "^2.0.0"
+    }
+  ],
+  "componentDependencies": [],
+  "examples": [
+    "<Button>Click me</Button>",
+    "<Button variant='outline'>Outline</Button>",
+    "<Button size='lg'>Large Button</Button>"
+  ],
+  "docs": "A versatile button component supporting multiple variants, sizes, and states.",
+  "tags": ["button", "ui", "interactive", "form"],
+  "version": "1.0.0",
+  "author": "Ahmed BNA",
+  "license": "MIT"
+}

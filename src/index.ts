@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { initCommand } from './commands/init.js';
+import { addCommand } from './commands/add.js';
 import { logger } from './utils/logger.js';
 
 const program = new Command();
@@ -22,6 +23,19 @@ program
   .option('--bun', 'Use bun as package manager')
   .option('--skip-install', 'Skip package installation')
   .action(initCommand);
+
+program
+  .command('add')
+  .description('Add components to your project')
+  .argument('[components...]', 'Component names to add')
+  .option('--overwrite', 'Overwrite existing files')
+  .option('--dry-run', 'Show what would be installed without installing')
+  .option('-y, --yes', 'Skip confirmation prompts')
+  .option('--npm', 'Use npm as package manager')
+  .option('--yarn', 'Use yarn as package manager')
+  .option('--pnpm', 'Use pnpm as package manager')
+  .option('--bun', 'Use bun as package manager')
+  .action(addCommand);
 
 program.parse();
 

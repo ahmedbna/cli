@@ -9,8 +9,9 @@
     "bna": "bin/bna.js"
   },
   "scripts": {
-    "build": "npm run clean && tsc && npm run copy-templates",
+    "build": "npm run clean && tsc && npm run copy-templates && npm run copy-registry",
     "copy-templates": "cp -r src/templates dist/",
+    "copy-registry": "cp -r src/registry dist/",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
     "test": "jest",
