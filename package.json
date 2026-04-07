@@ -1,0 +1,39 @@
+{
+  "name": "bna",
+  "version": "1.0.0",
+  "description": "CLI AI agent that builds full-stack apps directly from your terminal",
+  "type": "module",
+  "bin": {
+    "bna": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "node build.js",
+    "dev": "node build.js && node dist/index.js",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "expo",
+    "react-native",
+    "convex",
+    "mobile",
+    "agent"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "conf": "^13.1.0",
+    "inquirer": "^12.5.0",
+    "ora": "^8.2.0",
+    "open": "^10.1.0",
+    "express": "^4.21.0",
+    "boxen": "^8.0.1",
+    "figures": "^6.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
