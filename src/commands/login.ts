@@ -48,52 +48,74 @@ export async function loginCommand(): Promise<void> {
     await sleep(POLL_INTERVAL);
 
     try {
-      const resp = await fetch(
-        `${API_BASE}${POLL_PATH}?session_id=${sessionId}`,
-      );
-      if (!resp.ok) continue;
+      const pollUrl = `${API_BASE}${POLL_PATH}?session_id=${encodeURIComponent(sessionId)}`;
+      const resp = await fetch(pollUrl);
 
-      const data = await resp.json();
+      if (!resp.ok) {
+        // Non-200 response — log it but keep polling
+        if (resp.status !== 200) {
+          const text = await resp.text().catch(() => '');
+          spinner.text = `Waiting for authentication... (server: ${resp.status})`;
+        }
+        continue;
+      }
 
-      if (data.token) {
-        spinner.succeed('Authenticated!');
+      let data: any;
+      try {
+        data = await resp.json();
+      } catch (parseErr) {
+        // JSON parse failure — keep polling
+        spinner.text = 'Waiting for authentication... (bad response)';
+        continue;
+      }
 
-        // Store the auth token (Convex JWT)
-        store.set('authToken', data.token);
+      // The server returns { token: null } when no token is stored yet
+      if (!data || data.token === null || data.token === undefined) {
+        continue;
+      }
 
-        // Store identity fields from the payload
-        if (data.userId) store.set('userId', data.userId);
-        if (data.email) store.set('email', data.email);
-        if (data.convexAccessToken)
-          store.set('convexAccessToken', data.convexAccessToken);
-        if (data.teamSlug) store.set('convexTeamSlug', data.teamSlug);
+      // We have a token!
+      spinner.succeed('Authenticated!');
 
-        // If userId wasn't in the payload, try JWT
-        if (!data.userId) {
-          try {
+      // Store the auth token (Convex JWT)
+      store.set('authToken', data.token);
+
+      // Store identity fields from the payload
+      if (data.userId) store.set('userId', data.userId);
+      if (data.email) store.set('email', data.email);
+      if (data.convexAccessToken)
+        store.set('convexAccessToken', data.convexAccessToken);
+      if (data.teamSlug) store.set('convexTeamSlug', data.teamSlug);
+
+      // If userId wasn't in the payload, try decoding the JWT
+      if (!data.userId && data.token) {
+        try {
+          const parts = data.token.split('.');
+          if (parts.length === 3) {
             const payload = JSON.parse(
-              Buffer.from(data.token.split('.')[1], 'base64url').toString(
-                'utf-8',
-              ),
+              Buffer.from(parts[1], 'base64url').toString('utf-8'),
             );
             if (payload.sub) store.set('userId', payload.sub);
             if (payload.email && !data.email) store.set('email', payload.email);
-          } catch {}
+          }
+        } catch {
+          // JWT decode failed — not critical
         }
-
-        // Validate token + resolve userId server-side
-        await validateAndResolveUser();
-
-        console.log();
-        log.success(`Logged in as ${chalk.cyan(store.get('email') ?? 'user')}`);
-        if (store.get('userId')) {
-          log.info(`User ID: ${chalk.dim(store.get('userId')!)}`);
-        }
-        log.info('Run `bna generate` or just `bna` to start building!');
-        return;
       }
-    } catch {
-      // Network error — keep polling
+
+      // Validate token + resolve userId server-side
+      await validateAndResolveUser();
+
+      console.log();
+      log.success(`Logged in as ${chalk.cyan(store.get('email') ?? 'user')}`);
+      if (store.get('userId')) {
+        log.info(`User ID: ${chalk.dim(store.get('userId')!)}`);
+      }
+      log.info('Run `bna generate` or just `bna` to start building!');
+      return;
+    } catch (err) {
+      // Network error — keep polling silently
+      spinner.text = 'Waiting for authentication... (retrying)';
     }
   }
 
@@ -109,8 +131,7 @@ async function validateAndResolveUser(): Promise<void> {
   if (!token) return;
 
   try {
-    const apiBase = store.get('apiBaseUrl');
-    const resp = await fetch(`${apiBase}/api/cli-credits`, {
+    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -119,7 +140,9 @@ async function validateAndResolveUser(): Promise<void> {
       if (data.userId) store.set('userId', data.userId);
       if (data.email) store.set('email', data.email);
     }
-  } catch {}
+  } catch {
+    // Non-critical — we already have the token
+  }
 }
 
 function sleep(ms: number): Promise<void> {

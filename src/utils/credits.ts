@@ -4,6 +4,8 @@
 import { store, getAuthToken } from './store.js';
 import { log } from './logger.js';
 
+const API_BASE = 'https://ai.ahmedbna.com';
+
 export async function checkCredits(): Promise<{
   credits: number;
   hasEnough: boolean;
@@ -12,9 +14,8 @@ export async function checkCredits(): Promise<{
 }> {
   try {
     const token = getAuthToken();
-    const apiBase = store.get('apiBaseUrl');
 
-    const resp = await fetch(`${apiBase}/api/cli-credits`, {
+    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -68,9 +69,8 @@ export async function deductCredits(
 ): Promise<void> {
   try {
     const token = getAuthToken();
-    const apiBase = store.get('apiBaseUrl');
 
-    const resp = await fetch(`${apiBase}/api/cli-credits`, {
+    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

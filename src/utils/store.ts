@@ -10,7 +10,6 @@ interface StoreSchema {
   convexAccessToken: string | null;
   convexTeamSlug: string | null;
   anthropicApiKey: string | null;
-  apiBaseUrl: string;
 }
 
 export const store = new Conf<StoreSchema>({
@@ -22,10 +21,6 @@ export const store = new Conf<StoreSchema>({
     convexAccessToken: { type: ['string', 'null'], default: null },
     convexTeamSlug: { type: ['string', 'null'], default: null },
     anthropicApiKey: { type: ['string', 'null'], default: null },
-    apiBaseUrl: {
-      type: 'string',
-      default: 'https://ai.ahmedbna.com',
-    },
   },
 });
 
