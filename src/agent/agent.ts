@@ -1,7 +1,7 @@
 // src/agent/agent.ts
 // Core agentic loop: BNA server proxy (streaming) → tool execution → feed results back
 //
-// Uses /api/cli-chat-v2 which streams Anthropic SSE events directly.
+// Uses /api/cli-chat which streams Anthropic SSE events directly.
 // The CLI reads the stream, accumulates content, executes tools, and loops.
 
 import { buildSystemPrompt } from './prompts.js';
@@ -111,10 +111,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   try {
     authToken = getAuthToken();
   } catch {
-    log.error(
-      'Not authenticated. Run `bna login` first.\n' +
-        '  The BNA server handles API calls — no API key needed on your end.',
-    );
+    log.error('Not authenticated. Run `bna login` first.');
     process.exit(1);
   }
 
@@ -140,7 +137,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.info(chalk.bold('Starting BNA Agent...'));
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
-  log.info(chalk.dim('Using BNA server for AI — no API key needed'));
+  log.info(chalk.dim('Using BNA code'));
   log.divider();
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -289,7 +286,7 @@ async function fetchStream(
   messages: any[],
   tools: any[],
 ): Promise<Response> {
-  const resp = await fetch(`${API_BASE}/api/cli-chat-v2`, {
+  const resp = await fetch(`${API_BASE}/api/cli-chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -39,9 +39,6 @@ export async function creditsCommand(): Promise<void> {
     );
   } else {
     log.info('Each generation uses credits based on token usage.');
-    log.info(
-      `Or use your own API key to skip credits: ${chalk.cyan('bna config --api-key sk-ant-...')}`,
-    );
   }
   console.log();
 }

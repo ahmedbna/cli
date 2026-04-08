@@ -9,7 +9,6 @@ interface StoreSchema {
   email: string | null;
   convexAccessToken: string | null;
   convexTeamSlug: string | null;
-  anthropicApiKey: string | null;
 }
 
 export const store = new Conf<StoreSchema>({
@@ -20,7 +19,6 @@ export const store = new Conf<StoreSchema>({
     email: { type: ['string', 'null'], default: null },
     convexAccessToken: { type: ['string', 'null'], default: null },
     convexTeamSlug: { type: ['string', 'null'], default: null },
-    anthropicApiKey: { type: ['string', 'null'], default: null },
   },
 });
 

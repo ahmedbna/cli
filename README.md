@@ -61,29 +61,13 @@ npx expo run:android    # Android emulator
 
 ## Commands
 
-| Command                           | Description                         |
-| --------------------------------- | ----------------------------------- |
-| `bna login`                       | Authenticate with BNA               |
-| `bna logout`                      | Clear saved authentication          |
-| `bna build`                       | Build a mobile app (alias: `bna b`) |
-| `bna credits`                     | Check your credit balance           |
-| `bna config --show`               | View current configuration          |
-| `bna config --api-key sk-ant-...` | Use your own Anthropic API key      |
-
-## Using Your Own API Key
-
-If you prefer to use your own Anthropic API key instead of BNA credits:
-
-```bash
-bna config --api-key sk-ant-your-key-here
-```
-
-Or set the environment variable:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-your-key-here
-bna build
-```
+| Command             | Description                         |
+| ------------------- | ----------------------------------- |
+| `bna login`         | Authenticate with BNA               |
+| `bna logout`        | Clear saved authentication          |
+| `bna build`         | Build a mobile app (alias: `bna b`) |
+| `bna credits`       | Check your credit balance           |
+| `bna config --show` | View current configuration          |
 
 ## How It Works
 
