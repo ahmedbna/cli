@@ -1,69 +1,65 @@
 // src/agent/agent.ts
-// Core agentic loop: Anthropic API → tool execution → feed results back
+// Core agentic loop: BNA server proxy → tool execution → feed results back
+//
+// The CLI does NOT call Anthropic directly. Instead it sends messages to the
+// BNA server at /api/cli-chat, which uses the server's own ANTHROPIC_API_KEY.
+// This way users never need to configure an API key — they just need to be
+// authenticated with `bna login`.
 
-import Anthropic from '@anthropic-ai/sdk';
 import { buildSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
 import { log } from '../utils/logger.js';
-import { store } from '../utils/store.js';
+import { getAuthToken } from '../utils/store.js';
 import chalk from 'chalk';
 import ora from 'ora';
 
 const MAX_ROUNDS = 30;
-const MODEL = 'claude-sonnet-4-20250514';
-const MAX_TOKENS = 16384;
+const API_BASE = 'https://ai.ahmedbna.com';
 
 export interface AgentOptions {
   projectRoot: string;
   prompt: string;
   stack: 'expo' | 'expo-convex';
-  apiKey?: string;
   onCreditsUsed?: (input: number, output: number) => Promise<void>;
 }
 
 interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
 }
 
 export async function runAgent(options: AgentOptions): Promise<void> {
-  const { projectRoot, prompt, stack, apiKey } = options;
+  const { projectRoot, prompt, stack } = options;
 
-  // Resolve API key: user's own key > stored key > error
-  const resolvedKey =
-    apiKey ?? store.get('anthropicApiKey') ?? process.env.ANTHROPIC_API_KEY;
-  if (!resolvedKey) {
+  // Ensure user is authenticated — the server uses its own API key
+  let authToken: string;
+  try {
+    authToken = getAuthToken();
+  } catch {
     log.error(
-      'No Anthropic API key found. Set one with:\n' +
-        '  bna config --api-key sk-ant-...\n' +
-        'or set ANTHROPIC_API_KEY environment variable'
+      'Not authenticated. Run `bna login` first.\n' +
+        '  The BNA server handles API calls — no API key needed on your end.',
     );
     process.exit(1);
   }
 
-  const client = new Anthropic({ apiKey: resolvedKey });
   const systemPrompt = buildSystemPrompt(stack);
 
   const accumulated: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
-    cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0,
   };
 
   // Build initial messages
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Array<{ role: string; content: any }> = [
     {
       role: 'user',
-      content: `Create a full-stack mobile application with the following description:\n\n${prompt}\n\nThe project root is: ${projectRoot}\nStack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\nPlease generate all the necessary files and set up the project. Start by planning the architecture, then create the theme, UI components, schema, backend functions, and screens. After writing all files, run the necessary setup commands.`,
+      content: `Create a full-stack mobile application with the following description:\n\n${prompt}\n\nThe project root is: ${projectRoot}\nStack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\nPlease build all the necessary files and set up the project. Start by planning the architecture, then create the theme, UI components, schema, backend functions, and screens. After writing all files, run the necessary setup commands.`,
     },
   ];
 
   log.divider();
   log.info(chalk.bold('Starting BNA Agent...'));
-  log.info(`Model: ${chalk.cyan(MODEL)}`);
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
   log.divider();
@@ -74,19 +70,24 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       color: 'yellow',
     }).start();
 
-    let response: Anthropic.Message;
+    let response: any;
     try {
-      response = await client.messages.create({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        system: systemPrompt,
-        tools: toolDefinitions,
+      response = await callBnaServer({
+        authToken,
+        systemPrompt,
         messages,
+        tools: toolDefinitions,
       });
     } catch (err: any) {
       spinner.fail('API request failed');
       if (err.status === 401) {
-        log.error('Invalid API key. Check your key with `bna config --show`');
+        log.error(
+          'Authentication expired. Run `bna login` to re-authenticate.',
+        );
+      } else if (err.status === 402) {
+        log.error(
+          'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
+        );
       } else if (err.status === 429) {
         log.error('Rate limited. Please wait a moment and try again.');
       } else {
@@ -101,18 +102,14 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     if (response.usage) {
       accumulated.inputTokens += response.usage.input_tokens ?? 0;
       accumulated.outputTokens += response.usage.output_tokens ?? 0;
-      const cache = (response.usage as any);
-      accumulated.cacheCreationInputTokens += cache.cache_creation_input_tokens ?? 0;
-      accumulated.cacheReadInputTokens += cache.cache_read_input_tokens ?? 0;
     }
 
     // Process content blocks
-    const assistantContent: Anthropic.ContentBlock[] = response.content;
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    const assistantContent: any[] = response.content;
+    const toolResults: any[] = [];
 
     for (const block of assistantContent) {
       if (block.type === 'text') {
-        // Stream text to terminal, stripping boltArtifact XML but keeping file action logs
         const cleaned = stripBoltXml(block.text);
         if (cleaned.trim()) {
           console.log();
@@ -129,7 +126,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
               ? chalk.dim(` → ${toolInput.filePath}`)
               : toolName === 'runCommand'
                 ? chalk.dim(` → ${toolInput.command}`)
-                : '')
+                : ''),
         );
 
         let result: string;
@@ -154,7 +151,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     // If there were tool calls, add results and continue
     if (toolResults.length > 0) {
       messages.push({ role: 'user', content: toolResults });
-      continue; // next round
+      continue;
     }
 
     // No tool calls and stop_reason is 'end_turn' → we're done
@@ -178,30 +175,61 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   // Report usage
   console.log();
   log.divider();
-  const totalInput =
-    accumulated.inputTokens +
-    accumulated.cacheCreationInputTokens +
-    accumulated.cacheReadInputTokens;
   log.info(
     chalk.dim('Tokens used: ') +
-      chalk.white(`${totalInput.toLocaleString()} input`) +
+      chalk.white(`${accumulated.inputTokens.toLocaleString()} input`) +
       chalk.dim(' + ') +
-      chalk.white(`${accumulated.outputTokens.toLocaleString()} output`)
+      chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
-  // Deduct credits if using BNA server
+  // Deduct credits
   if (options.onCreditsUsed) {
-    await options.onCreditsUsed(totalInput, accumulated.outputTokens);
+    await options.onCreditsUsed(
+      accumulated.inputTokens,
+      accumulated.outputTokens,
+    );
   }
 
   log.success(chalk.bold('Generation complete!'));
   console.log();
 }
 
+// ─── Server proxy call ──────────────────────────────────────────────────────
+
+async function callBnaServer(opts: {
+  authToken: string;
+  systemPrompt: string;
+  messages: Array<{ role: string; content: any }>;
+  tools: any[];
+}): Promise<any> {
+  const resp = await fetch(`${API_BASE}/api/cli-chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${opts.authToken}`,
+    },
+    body: JSON.stringify({
+      system: opts.systemPrompt,
+      messages: opts.messages,
+      tools: opts.tools,
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    const error: any = new Error(
+      `BNA server error (${resp.status}): ${text || resp.statusText}`,
+    );
+    error.status = resp.status;
+    throw error;
+  }
+
+  return resp.json();
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function stripBoltXml(text: string): string {
-  // Remove <boltArtifact> and <boltAction> tags but keep non-XML text
   return text
     .replace(/<boltArtifact[^>]*>/g, '')
     .replace(/<\/boltArtifact>/g, '')

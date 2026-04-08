@@ -1,10 +1,10 @@
 // src/index.ts
-// BNA CLI — AI-powered full-stack mobile app generator
+// BNA CLI — AI agent that builds full-stack mobile apps directly from your terminal
 
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { loginCommand } from './commands/login.js';
-import { generateCommand } from './commands/generate.js';
+import { generateCommand } from './commands/build.js';
 import { creditsCommand } from './commands/credits.js';
 import { logoutCommand } from './commands/logout.js';
 import { configCommand } from './commands/config.js';
@@ -31,15 +31,14 @@ program
   .description('Clear saved authentication')
   .action(logoutCommand);
 
-// ─── bna generate (default command) ─────────────────────────────────────────
+// ─── bna build (default command) ─────────────────────────────────────────
 program
-  .command('generate')
-  .alias('gen')
-  .alias('g')
-  .description('Generate a full-stack mobile application')
+  .command('build')
+  .alias('b')
+  .description('Build a full-stack mobile application')
   .option('-p, --prompt <prompt>', 'App description prompt')
   .option('-n, --name <name>', 'Project name')
-  .option('-s, --stack <stack>', 'Stack: expo | expo-convex', 'expo-convex')
+  .option('-s, --stack <stack>', 'Stack: expo | expo-convex')
   .option('--no-install', 'Skip npm install after generation')
   .option('--no-run', 'Skip running the dev server after generation')
   .action(generateCommand);
@@ -53,13 +52,11 @@ program
 // ─── bna config ─────────────────────────────────────────────────────────────
 program
   .command('config')
-  .description('View or update CLI configuration')
-  .option('--api-key <key>', 'Set your own Anthropic API key')
-  .option('--clear-api-key', 'Remove custom API key')
+  .description('View CLI configuration')
   .option('--show', 'Show current configuration')
   .action(configCommand);
 
-// Default: if no command is given, run generate
+// Default: if no command is given, run build
 program.action(() => {
   generateCommand({});
 });

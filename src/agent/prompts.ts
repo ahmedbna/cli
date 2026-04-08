@@ -55,7 +55,7 @@ After writing all files, always run the necessary commands to get the app workin
 export function buildSystemPrompt(stack: 'expo' | 'expo-convex'): string {
   const stackNote =
     stack === 'expo'
-      ? 'The user chose Expo-only (no Convex backend). Do NOT generate convex/ files or Convex-related code.'
+      ? 'The user chose Expo-only (no Convex backend). Do NOT build convex/ files or Convex-related code.'
       : 'The user chose Expo + Convex (full-stack). Generate both frontend and Convex backend.';
 
   return [ROLE_SYSTEM_PROMPT, CLI_SYSTEM_PROMPT, stackNote].join('\n\n');

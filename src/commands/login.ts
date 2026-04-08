@@ -20,9 +20,7 @@ export async function loginCommand(): Promise<void> {
     log.success('You are already logged in.');
     log.info(`Email:   ${chalk.cyan(store.get('email') ?? 'unknown')}`);
     log.info(`User ID: ${chalk.dim(store.get('userId') ?? 'unknown')}`);
-    log.info(
-      'Run `bna logout` to sign out, or `bna generate` to start building.',
-    );
+    log.info('Run `bna logout` to sign out, or `bna build` to start building.');
     return;
   }
 
@@ -111,7 +109,7 @@ export async function loginCommand(): Promise<void> {
       if (store.get('userId')) {
         log.info(`User ID: ${chalk.dim(store.get('userId')!)}`);
       }
-      log.info('Run `bna generate` or just `bna` to start building!');
+      log.info('Run `bna build` or just `bna` to start building!');
       return;
     } catch (err) {
       // Network error — keep polling silently

@@ -32,10 +32,10 @@ bna login
 
 Opens your browser to sign in with your BNA account. Your session persists across CLI runs.
 
-### 2. Generate an app
+### 2. Build an app
 
 ```bash
-bna generate
+bna build
 ```
 
 The CLI will interactively ask for:
@@ -47,7 +47,7 @@ The CLI will interactively ask for:
 Or pass everything inline:
 
 ```bash
-bna generate --name my-fitness-app --stack expo-convex --prompt "A fitness tracker with workout logging, progress charts, and a dark theme"
+bna build --name my-fitness-app --stack expo-convex --prompt "A fitness tracker with workout logging, progress charts, and a dark theme"
 ```
 
 ### 3. Run your app
@@ -61,14 +61,14 @@ npx expo run:android    # Android emulator
 
 ## Commands
 
-| Command                           | Description                            |
-| --------------------------------- | -------------------------------------- |
-| `bna login`                       | Authenticate with BNA                  |
-| `bna logout`                      | Clear saved authentication             |
-| `bna generate`                    | Generate a mobile app (alias: `bna g`) |
-| `bna credits`                     | Check your credit balance              |
-| `bna config --show`               | View current configuration             |
-| `bna config --api-key sk-ant-...` | Use your own Anthropic API key         |
+| Command                           | Description                         |
+| --------------------------------- | ----------------------------------- |
+| `bna login`                       | Authenticate with BNA               |
+| `bna logout`                      | Clear saved authentication          |
+| `bna build`                       | Build a mobile app (alias: `bna b`) |
+| `bna credits`                     | Check your credit balance           |
+| `bna config --show`               | View current configuration          |
+| `bna config --api-key sk-ant-...` | Use your own Anthropic API key      |
 
 ## Using Your Own API Key
 
@@ -82,7 +82,7 @@ Or set the environment variable:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-your-key-here
-bna generate
+bna build
 ```
 
 ## How It Works
@@ -104,7 +104,7 @@ bna/
 │   ├── index.ts              # CLI entry point (Commander.js)
 │   ├── commands/
 │   │   ├── login.ts           # Browser-based OAuth flow
-│   │   ├── generate.ts        # Main generation flow
+│   │   ├── build.ts        # Main generation flow
 │   │   ├── credits.ts         # Credit balance check
 │   │   ├── logout.ts          # Clear auth
 │   │   └── config.ts          # CLI configuration

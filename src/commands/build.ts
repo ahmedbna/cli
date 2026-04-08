@@ -1,4 +1,4 @@
-// src/commands/generate.ts
+// src/commands/build.ts
 
 import path from 'path';
 import fs from 'fs';
@@ -21,54 +21,40 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.banner();
 
   // ── 1. Check authentication ──────────────────────────────────────────────
-  const hasOwnApiKey =
-    !!store.get('anthropicApiKey') || !!process.env.ANTHROPIC_API_KEY;
   const loggedIn = isAuthenticated();
 
-  if (!loggedIn && !hasOwnApiKey) {
+  if (!loggedIn) {
     log.warn(
-      'You are not logged in and no API key is configured.\n' +
+      'You are not logged in.\n' +
         '  Run ' +
         chalk.cyan('bna login') +
-        ' to authenticate with BNA, or\n' +
-        '  Run ' +
-        chalk.cyan('bna config --api-key sk-ant-...') +
-        ' to use your own Anthropic key.',
+        ' to authenticate with BNA.',
     );
     return;
   }
 
-  // ── 2. Check credits (only when using BNA server, not own key) ───────────
-  const usingBnaCredits = loggedIn && !hasOwnApiKey;
+  // ── 2. Check credits ─────────────────────────────────────────────────────
+  log.info('Checking credits...');
+  const { credits, hasEnough, userId } = await checkCredits();
 
-  if (usingBnaCredits) {
-    log.info('Checking credits...');
-    const { credits, hasEnough, userId } = await checkCredits();
-
-    if (!hasEnough) {
-      log.error(
-        `Insufficient credits (${credits} remaining).\n` +
-          `  Visit ${chalk.cyan('https://ai.ahmedbna.com/credits')} to purchase more credits.\n` +
-          `  Or use your own API key: ${chalk.cyan('bna config --api-key sk-ant-...')}`,
-      );
-      return;
-    }
-
-    if (!userId) {
-      log.error(
-        'Could not verify your identity. Your auth token may be expired.\n' +
-          `  Run ${chalk.cyan('bna login')} to re-authenticate.`,
-      );
-      return;
-    }
-
-    if (credits >= 0) {
-      log.credits(credits);
-    }
-  } else if (loggedIn && hasOwnApiKey) {
-    log.info(
-      chalk.dim('Using your own API key — BNA credits will not be deducted.'),
+  if (!hasEnough) {
+    log.error(
+      `Insufficient credits (${credits} remaining).\n` +
+        `  Visit ${chalk.cyan('https://ai.ahmedbna.com/credits')} to purchase more credits.`,
     );
+    return;
+  }
+
+  if (!userId) {
+    log.error(
+      'Could not verify your identity. Your auth token may be expired.\n' +
+        `  Run ${chalk.cyan('bna login')} to re-authenticate.`,
+    );
+    return;
+  }
+
+  if (credits >= 0) {
+    log.credits(credits);
   }
 
   // ── 3. Determine project directory ────────────────────────────────────────
@@ -110,7 +96,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     log.success(`Created directory: ${chalk.cyan(projectRoot)}`);
   }
 
-  // ── 4. Choose stack ───────────────────────────────────────────────────────
+  // ── 4. Choose stack (BEFORE prompt) ───────────────────────────────────────
   let stack: 'expo' | 'expo-convex';
   if (options.stack === 'expo') {
     stack = 'expo';
@@ -138,7 +124,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     stack = stackAnswer.stack;
   }
 
-  // ── 5. Get the prompt ─────────────────────────────────────────────────────
+  // ── 5. Get the prompt (AFTER stack) ───────────────────────────────────────
   let prompt: string;
   if (options.prompt) {
     prompt = options.prompt;
@@ -172,11 +158,9 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectRoot,
     prompt,
     stack,
-    onCreditsUsed: usingBnaCredits
-      ? async (input, output) => {
-          await deductCredits(input, output, chatInitialId);
-        }
-      : undefined,
+    onCreditsUsed: async (input, output) => {
+      await deductCredits(input, output, chatInitialId);
+    },
   });
 
   // ── 8. Post-generation instructions ───────────────────────────────────────
