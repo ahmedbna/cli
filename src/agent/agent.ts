@@ -1,10 +1,8 @@
 // src/agent/agent.ts
-// Core agentic loop: BNA server proxy → tool execution → feed results back
+// Core agentic loop: BNA server proxy (streaming) → tool execution → feed results back
 //
-// The CLI does NOT call Anthropic directly. Instead it sends messages to the
-// BNA server at /api/cli-chat, which uses the server's own ANTHROPIC_API_KEY.
-// This way users never need to configure an API key — they just need to be
-// authenticated with `bna login`.
+// Uses /api/cli-chat-v2 which streams Anthropic SSE events directly.
+// The CLI reads the stream, accumulates content, executes tools, and loops.
 
 import { buildSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
@@ -28,10 +26,87 @@ interface TokenUsage {
   outputTokens: number;
 }
 
+// ─── Anthropic SSE event types ───────────────────────────────────────────────
+
+interface TextDelta {
+  type: 'text_delta';
+  text: string;
+}
+
+interface InputJsonDelta {
+  type: 'input_json_delta';
+  partial_json: string;
+}
+
+interface ContentBlockStart {
+  type: 'content_block_start';
+  index: number;
+  content_block:
+    | { type: 'text'; text: string }
+    | {
+        type: 'tool_use';
+        id: string;
+        name: string;
+        input: Record<string, any>;
+      };
+}
+
+interface ContentBlockDelta {
+  type: 'content_block_delta';
+  index: number;
+  delta: TextDelta | InputJsonDelta;
+}
+
+interface ContentBlockStop {
+  type: 'content_block_stop';
+  index: number;
+}
+
+interface MessageDelta {
+  type: 'message_delta';
+  delta: { stop_reason: string; stop_sequence: string | null };
+  usage: { output_tokens: number };
+}
+
+interface MessageStart {
+  type: 'message_start';
+  message: {
+    usage: { input_tokens: number; output_tokens: number };
+  };
+}
+
+type SSEEvent =
+  | MessageStart
+  | ContentBlockStart
+  | ContentBlockDelta
+  | ContentBlockStop
+  | MessageDelta
+  | { type: 'message_stop' }
+  | { type: 'ping' }
+  | { type: 'error'; error: { type: string; message: string } };
+
+// ─── Block tracking during streaming ────────────────────────────────────────
+
+interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  inputJson: string; // accumulated partial JSON
+  input: Record<string, any>;
+}
+
+type StreamBlock = TextBlock | ToolUseBlock;
+
+// ─── Main agent loop ─────────────────────────────────────────────────────────
+
 export async function runAgent(options: AgentOptions): Promise<void> {
   const { projectRoot, prompt, stack } = options;
 
-  // Ensure user is authenticated — the server uses its own API key
   let authToken: string;
   try {
     authToken = getAuthToken();
@@ -45,16 +120,19 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
   const systemPrompt = buildSystemPrompt(stack);
 
-  const accumulated: TokenUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-  };
+  const accumulated: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
-  // Build initial messages
   const messages: Array<{ role: string; content: any }> = [
     {
       role: 'user',
-      content: `Create a full-stack mobile application with the following description:\n\n${prompt}\n\nThe project root is: ${projectRoot}\nStack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\nPlease build all the necessary files and set up the project. Start by planning the architecture, then create the theme, UI components, schema, backend functions, and screens. After writing all files, run the necessary setup commands.`,
+      content:
+        `Create a full-stack mobile application with the following description:\n\n${prompt}\n\n` +
+        `The project root is: ${projectRoot}\n` +
+        `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n` +
+        `Please build all the necessary files and set up the project. ` +
+        `Start by planning the architecture, then create the theme, UI components, ` +
+        `schema, backend functions, and screens. ` +
+        `After writing all files, run the necessary setup commands.`,
     },
   ];
 
@@ -62,76 +140,89 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.info(chalk.bold('Starting BNA Agent...'));
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
+  log.info(chalk.dim('Using BNA server for AI — no API key needed'));
   log.divider();
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const spinner = ora({
-      text: chalk.dim(`Thinking... (round ${round + 1}/${MAX_ROUNDS})`),
-      color: 'yellow',
-    }).start();
-
-    let response: any;
+    // ── Call the streaming endpoint ────────────────────────────────────────
+    let response: Response;
     try {
-      response = await callBnaServer({
+      response = await fetchStream(
         authToken,
         systemPrompt,
         messages,
-        tools: toolDefinitions,
-      });
+        toolDefinitions,
+      );
     } catch (err: any) {
-      spinner.fail('API request failed');
-      if (err.status === 401) {
+      log.error(err.message ?? 'Network error');
+      process.exit(1);
+    }
+
+    if (!response.ok) {
+      let errMsg = `API request failed (${response.status})`;
+      try {
+        const errJson = await response.json();
+        errMsg = errJson.error ?? errMsg;
+      } catch {
+        const errText = await response.text().catch(() => '');
+        if (errText) errMsg = errText;
+      }
+
+      if (response.status === 401) {
         log.error(
           'Authentication expired. Run `bna login` to re-authenticate.',
         );
-      } else if (err.status === 402) {
+      } else if (response.status === 402) {
         log.error(
           'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
         );
-      } else if (err.status === 429) {
+      } else if (response.status === 429) {
         log.error('Rate limited. Please wait a moment and try again.');
       } else {
-        log.error(err.message ?? 'Unknown error');
+        log.error(errMsg);
       }
       process.exit(1);
     }
 
-    spinner.stop();
+    // ── Read and process the SSE stream ───────────────────────────────────
+    const { blocks, stopReason, usage } = await readStream(response, round);
 
-    // Track usage
-    if (response.usage) {
-      accumulated.inputTokens += response.usage.input_tokens ?? 0;
-      accumulated.outputTokens += response.usage.output_tokens ?? 0;
+    // Accumulate token usage
+    if (usage) {
+      accumulated.inputTokens += usage.inputTokens;
+      accumulated.outputTokens += usage.outputTokens;
     }
 
-    // Process content blocks
-    const assistantContent: any[] = response.content;
+    // ── Build assistant message and collect tool results ──────────────────
+    const assistantContent: any[] = [];
     const toolResults: any[] = [];
 
-    for (const block of assistantContent) {
+    for (const block of blocks) {
       if (block.type === 'text') {
-        const cleaned = stripBoltXml(block.text);
-        if (cleaned.trim()) {
-          console.log();
-          console.log(chalk.white(cleaned));
-        }
+        assistantContent.push({ type: 'text', text: block.text });
       } else if (block.type === 'tool_use') {
-        const toolName = block.name as ToolName;
-        const toolInput = block.input as Record<string, any>;
+        assistantContent.push({
+          type: 'tool_use',
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        });
 
+        // Execute the tool
+        const toolName = block.name as ToolName;
         log.info(
           chalk.dim('Tool: ') +
             chalk.cyan(toolName) +
             (toolName === 'createFile'
-              ? chalk.dim(` → ${toolInput.filePath}`)
+              ? chalk.dim(` → ${block.input.filePath}`)
               : toolName === 'runCommand'
-                ? chalk.dim(` → ${toolInput.command}`)
+                ? chalk.dim(` → ${block.input.command}`)
                 : ''),
         );
 
         let result: string;
         try {
-          result = executeTool(projectRoot, toolName, toolInput);
+          result = executeTool(projectRoot, toolName, block.input);
         } catch (err: any) {
           result = `Error: ${err.message}`;
           log.error(err.message);
@@ -145,22 +236,19 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       }
     }
 
-    // Add assistant message to history
+    // Add assistant turn
     messages.push({ role: 'assistant', content: assistantContent });
 
-    // If there were tool calls, add results and continue
+    // If tools were called, add results and continue
     if (toolResults.length > 0) {
       messages.push({ role: 'user', content: toolResults });
       continue;
     }
 
-    // No tool calls and stop_reason is 'end_turn' → we're done
-    if (response.stop_reason === 'end_turn') {
-      break;
-    }
+    // No tool calls — check stop reason
+    if (stopReason === 'end_turn') break;
 
-    // stop_reason is 'max_tokens' → continue
-    if (response.stop_reason === 'max_tokens') {
+    if (stopReason === 'max_tokens') {
       log.warn('Response truncated — continuing...');
       messages.push({
         role: 'user',
@@ -172,7 +260,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     break;
   }
 
-  // Report usage
+  // ── Report usage ──────────────────────────────────────────────────────────
   console.log();
   log.divider();
   log.info(
@@ -182,7 +270,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
-  // Deduct credits
   if (options.onCreditsUsed) {
     await options.onCreditsUsed(
       accumulated.inputTokens,
@@ -194,46 +281,217 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   console.log();
 }
 
-// ─── Server proxy call ──────────────────────────────────────────────────────
+// ─── HTTP helpers ────────────────────────────────────────────────────────────
 
-async function callBnaServer(opts: {
-  authToken: string;
-  systemPrompt: string;
-  messages: Array<{ role: string; content: any }>;
-  tools: any[];
-}): Promise<any> {
-  const resp = await fetch(`${API_BASE}/api/cli-chat`, {
+async function fetchStream(
+  authToken: string,
+  systemPrompt: string,
+  messages: any[],
+  tools: any[],
+): Promise<Response> {
+  const resp = await fetch(`${API_BASE}/api/cli-chat-v2`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${opts.authToken}`,
+      Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({
-      system: opts.systemPrompt,
-      messages: opts.messages,
-      tools: opts.tools,
-    }),
+    body: JSON.stringify({ system: systemPrompt, messages, tools }),
   });
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    const error: any = new Error(
-      `BNA server error (${resp.status}): ${text || resp.statusText}`,
-    );
-    error.status = resp.status;
-    throw error;
-  }
-
-  return resp.json();
+  return resp;
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── SSE stream reader ───────────────────────────────────────────────────────
 
-function stripBoltXml(text: string): string {
-  return text
-    .replace(/<boltArtifact[^>]*>/g, '')
-    .replace(/<\/boltArtifact>/g, '')
-    .replace(/<boltAction[^>]*>[\s\S]*?<\/boltAction>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+interface StreamResult {
+  blocks: StreamBlock[];
+  stopReason: string;
+  usage: { inputTokens: number; outputTokens: number } | null;
+}
+
+async function readStream(
+  response: Response,
+  round: number,
+): Promise<StreamResult> {
+  const blocks: StreamBlock[] = [];
+  let stopReason = 'end_turn';
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  // Map from block index → block in `blocks` array
+  const indexToBlock = new Map<number, StreamBlock>();
+
+  // Track if we've printed a newline after the spinner
+  let textStarted = false;
+
+  const spinner = ora({
+    text: chalk.dim(`Thinking... (round ${round + 1})`),
+    color: 'yellow',
+  }).start();
+
+  const body = response.body;
+  if (!body) {
+    spinner.stop();
+    return { blocks, stopReason, usage: null };
+  }
+
+  const decoder = new TextDecoder();
+  const reader = body.getReader();
+
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process all complete SSE messages in the buffer
+      const lines = buffer.split('\n');
+      // Keep the last (potentially incomplete) line in the buffer
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === ':') continue; // ping / empty
+
+        if (trimmed.startsWith('data: ')) {
+          const data = trimmed.slice(6).trim();
+          if (data === '[DONE]') continue;
+
+          let event: SSEEvent;
+          try {
+            event = JSON.parse(data);
+          } catch {
+            continue;
+          }
+
+          processEvent(event, {
+            blocks,
+            indexToBlock,
+            onText: (text) => {
+              if (text) {
+                if (!textStarted) {
+                  spinner.stop();
+                  textStarted = true;
+                  console.log(); // blank line before text
+                }
+                process.stdout.write(chalk.white(text));
+              }
+            },
+            onStopReason: (reason) => {
+              stopReason = reason;
+            },
+            onUsage: (input, output) => {
+              inputTokens += input;
+              outputTokens += output;
+            },
+          });
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+    if (!textStarted) {
+      spinner.stop();
+    } else {
+      // End the streamed text with a newline
+      console.log();
+    }
+  }
+
+  return {
+    blocks,
+    stopReason,
+    usage: { inputTokens, outputTokens },
+  };
+}
+
+// ─── SSE event processor ─────────────────────────────────────────────────────
+
+function processEvent(
+  event: SSEEvent,
+  ctx: {
+    blocks: StreamBlock[];
+    indexToBlock: Map<number, StreamBlock>;
+    onText: (text: string) => void;
+    onStopReason: (reason: string) => void;
+    onUsage: (input: number, output: number) => void;
+  },
+) {
+  const { blocks, indexToBlock, onText, onStopReason, onUsage } = ctx;
+
+  switch (event.type) {
+    case 'message_start': {
+      const u = event.message.usage;
+      onUsage(u.input_tokens, u.output_tokens);
+      break;
+    }
+
+    case 'content_block_start': {
+      const cb = event.content_block;
+      let block: StreamBlock;
+      if (cb.type === 'text') {
+        block = { type: 'text', text: cb.text ?? '' };
+      } else {
+        // tool_use
+        block = {
+          type: 'tool_use',
+          id: cb.id,
+          name: cb.name,
+          inputJson: '',
+          input: {},
+        };
+      }
+      blocks.push(block);
+      indexToBlock.set(event.index, block);
+      break;
+    }
+
+    case 'content_block_delta': {
+      const block = indexToBlock.get(event.index);
+      if (!block) break;
+
+      const delta = event.delta;
+      if (delta.type === 'text_delta') {
+        if (block.type === 'text') {
+          block.text += delta.text;
+          onText(delta.text);
+        }
+      } else if (delta.type === 'input_json_delta') {
+        if (block.type === 'tool_use') {
+          block.inputJson += delta.partial_json;
+        }
+      }
+      break;
+    }
+
+    case 'content_block_stop': {
+      const block = indexToBlock.get(event.index);
+      if (block?.type === 'tool_use') {
+        try {
+          block.input = JSON.parse(block.inputJson || '{}');
+        } catch {
+          block.input = {};
+        }
+      }
+      break;
+    }
+
+    case 'message_delta': {
+      onUsage(0, event.usage?.output_tokens ?? 0);
+      if (event.delta.stop_reason) {
+        onStopReason(event.delta.stop_reason);
+      }
+      break;
+    }
+
+    case 'error': {
+      log.error(`Anthropic stream error: ${event.error.message}`);
+      break;
+    }
+
+    default:
+      break;
+  }
 }
