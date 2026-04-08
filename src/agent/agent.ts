@@ -4,7 +4,7 @@
 // Uses /api/cli-chat which streams Anthropic SSE events directly.
 // The CLI reads the stream, accumulates content, executes tools, and loops.
 
-import { buildSystemPrompt } from './prompts.js';
+import { generalSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
 import { log } from '../utils/logger.js';
 import { getAuthToken } from '../utils/store.js';
@@ -115,7 +115,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     process.exit(1);
   }
 
-  const systemPrompt = buildSystemPrompt(stack);
+  const systemPrompt = generalSystemPrompt({ stack });
 
   const accumulated: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
@@ -126,7 +126,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         `Create a full-stack mobile application with the following description:\n\n${prompt}\n\n` +
         `The project root is: ${projectRoot}\n` +
         `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n` +
-        `Please build all the necessary files and set up the project. ` +
+        `Build all the necessary files and set up the project. ` +
         `Start by planning the architecture, then create the theme, UI components, ` +
         `schema, backend functions, and screens. ` +
         `After writing all files, run the necessary setup commands.`,

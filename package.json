@@ -23,15 +23,16 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "boxen": "^8.0.1",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "conf": "^13.1.0",
-    "inquirer": "^12.5.0",
-    "ora": "^8.2.0",
-    "open": "^10.1.0",
     "express": "^4.21.0",
-    "boxen": "^8.0.1",
-    "figures": "^6.1.0"
+    "figures": "^6.1.0",
+    "inquirer": "^12.5.0",
+    "open": "^10.1.0",
+    "ora": "^8.2.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

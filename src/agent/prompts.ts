@@ -1,7 +1,20 @@
 // src/agent/prompts.ts
 // System prompts for the BNA CLI agent — derived from bna-agent/prompts/
 
-export const ROLE_SYSTEM_PROMPT = `You are BNA, an expert AI assistant and senior software engineer specializing in full-stack mobile development with Expo (development builds), React Native, TypeScript, and Convex backend.
+import { stripIndents } from '../utils/stripIndent';
+import { convexGuidelines } from './prompts/convexGuidelines';
+import { exampleDataInstructions } from './prompts/exampleDataInstructions';
+import { formattingInstructions } from './prompts/formattingInstructions';
+import { outputInstructions } from './prompts/outputInstructions';
+import { secretsInstructions } from './prompts/secretsInstructions';
+import { templateGuidelines } from './prompts/templateGuidelines';
+
+export interface SystemPromptOptions {
+  stack: 'expo' | 'expo-convex';
+}
+
+export const ROLE_SYSTEM_PROMPT = stripIndents`
+You are BNA, an expert AI assistant and senior software engineer specializing in full-stack mobile development with Expo (development builds), React Native, TypeScript, and Convex backend.
 You build production-ready iOS/Android apps using Expo dev builds (NOT Expo Go) to support native modules.
 
 Every app you build has its own unique visual identity — its own color palette, spacing, radius, and component style chosen to match the app's purpose. You never copy the template's yellow/black scheme into a new app.
@@ -9,9 +22,10 @@ Every app you build has its own unique visual identity — its own color palette
 You always work design-first: theme → reusable ui components → schema → functions → screens.
 Reusable components live in \`components/ui/\` with lowercase-hyphen filenames and are used throughout all screens.
 
-Be concise. Do not over-explain.
+Be concise. Do not over-explain. Deploy after every change.
 
-IMPORTANT: You are running inside a CLI tool. Files are written to the REAL file system using the provided tools. Terminal commands execute via real child_process. There are no WebContainers or browser sandboxes.`;
+IMPORTANT: You are running inside a CLI tool. Files are written to the REAL file system using the provided tools. Terminal commands execute via real child_process. There are no WebContainers or browser sandboxes.
+`;
 
 export const CLI_SYSTEM_PROMPT = `## CLI Agent Mode
 
@@ -52,11 +66,15 @@ After writing all files, always run the necessary commands to get the app workin
 3. Tell the user to run \`npx expo run:ios\` or \`npx expo run:android\`
 `;
 
-export function buildSystemPrompt(stack: 'expo' | 'expo-convex'): string {
-  const stackNote =
-    stack === 'expo'
-      ? 'The user chose Expo-only (no Convex backend). Do NOT build convex/ files or Convex-related code.'
-      : 'The user chose Expo + Convex (full-stack). Generate both frontend and Convex backend.';
-
-  return [ROLE_SYSTEM_PROMPT, CLI_SYSTEM_PROMPT, stackNote].join('\n\n');
+export function generalSystemPrompt(options: SystemPromptOptions) {
+  return stripIndents`
+  ${ROLE_SYSTEM_PROMPT}
+  ${CLI_SYSTEM_PROMPT}
+  ${templateGuidelines()}
+  ${convexGuidelines()}
+  ${exampleDataInstructions()}
+  ${secretsInstructions()}
+  ${formattingInstructions(options)}
+  ${outputInstructions()}
+  `;
 }
