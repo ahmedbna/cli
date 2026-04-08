@@ -137,7 +137,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.info(chalk.bold('Starting BNA Agent...'));
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
-  log.info(chalk.dim('Using BNA code'));
   log.divider();
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -151,18 +150,26 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         toolDefinitions,
       );
     } catch (err: any) {
-      log.error(err.message ?? 'Network error');
+      log.error(`Network error: ${err.message ?? 'Unknown error'}`);
+      log.warn('Check your internet connection and try again.');
       process.exit(1);
     }
 
     if (!response.ok) {
       let errMsg = `API request failed (${response.status})`;
+      let errBody = '';
+
       try {
-        const errJson = await response.json();
-        errMsg = errJson.error ?? errMsg;
+        const contentType = response.headers.get('content-type') ?? '';
+        if (contentType.includes('application/json')) {
+          const errJson = await response.json();
+          errBody = errJson.error ?? errJson.message ?? JSON.stringify(errJson);
+        } else {
+          errBody = await response.text();
+        }
+        if (errBody) errMsg = errBody;
       } catch {
-        const errText = await response.text().catch(() => '');
-        if (errText) errMsg = errText;
+        // ignore parse errors
       }
 
       if (response.status === 401) {
@@ -173,10 +180,18 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         log.error(
           'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
         );
+      } else if (response.status === 404) {
+        log.error(
+          'API endpoint not found. The BNA server may be updating — please try again in a moment.',
+        );
+        log.info(chalk.dim(`Details: ${errMsg}`));
       } else if (response.status === 429) {
         log.error('Rate limited. Please wait a moment and try again.');
+      } else if (response.status === 500) {
+        log.error('BNA server error. Please try again in a moment.');
+        log.info(chalk.dim(`Details: ${errMsg}`));
       } else {
-        log.error(errMsg);
+        log.error(`${errMsg}`);
       }
       process.exit(1);
     }
@@ -286,7 +301,7 @@ async function fetchStream(
   messages: any[],
   tools: any[],
 ): Promise<Response> {
-  const resp = await fetch(`${API_BASE}/api/cli-chat`, {
+  return fetch(`${API_BASE}/api/cli-chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -294,7 +309,6 @@ async function fetchStream(
     },
     body: JSON.stringify({ system: systemPrompt, messages, tools }),
   });
-  return resp;
 }
 
 // ─── SSE stream reader ───────────────────────────────────────────────────────
@@ -317,7 +331,6 @@ async function readStream(
   // Map from block index → block in `blocks` array
   const indexToBlock = new Map<number, StreamBlock>();
 
-  // Track if we've printed a newline after the spinner
   let textStarted = false;
 
   const spinner = ora({
@@ -392,7 +405,6 @@ async function readStream(
     if (!textStarted) {
       spinner.stop();
     } else {
-      // End the streamed text with a newline
       console.log();
     }
   }
@@ -484,7 +496,7 @@ function processEvent(
     }
 
     case 'error': {
-      log.error(`Anthropic stream error: ${event.error.message}`);
+      log.error(`Stream error: ${event.error.message}`);
       break;
     }
 
