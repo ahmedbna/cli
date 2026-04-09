@@ -5,9 +5,9 @@ import fs from 'fs';
 import os from 'os';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn, spawnSync } from 'child_process';
 import { log } from '../utils/logger.js';
-import { store, isAuthenticated } from '../utils/store.js';
+import { isAuthenticated } from '../utils/store.js';
 import { checkCredits, deductCredits } from '../utils/credits.js';
 import { runAgent } from '../agent/agent.js';
 
@@ -79,6 +79,24 @@ function resolveTemplateDir(stack: string): string {
  */
 function isMacOS(): boolean {
   return os.platform() === 'darwin';
+}
+
+/**
+ * Run an interactive command that requires user input (stdio: inherit).
+ * Returns true if the command succeeded (exit code 0), false otherwise.
+ */
+function runInteractive(command: string, cwd: string): boolean {
+  try {
+    const result = spawnSync(command, {
+      cwd,
+      stdio: 'inherit',
+      shell: true,
+      env: { ...process.env, FORCE_COLOR: '1' },
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 export async function generateCommand(options: GenerateOptions): Promise<void> {
@@ -213,6 +231,12 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.info('Scaffolding project from template...');
   try {
     const templateDir = resolveTemplateDir(stack);
+
+    // Create project dir if needed
+    if (!fs.existsSync(projectRoot)) {
+      fs.mkdirSync(projectRoot, { recursive: true });
+    }
+
     copyTemplateDir(templateDir, projectRoot);
     log.success(`Template copied to ${chalk.cyan(projectRoot)}`);
   } catch (err: any) {
@@ -242,27 +266,100 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       log.error(
         'Failed to install dependencies. You may need to install them manually.',
       );
+      process.exit(1);
     }
   }
 
-  // ── 9. Initialize Convex auth (if expo-convex) ────────────────────────────
+  // ── 9. Initialize Convex (if expo-convex) ─────────────────────────────────
   if (stack === 'expo-convex') {
-    log.info('Initializing Convex auth...');
-    try {
-      execSync('npx @convex-dev/auth', {
-        cwd: projectRoot,
-        stdio: 'inherit',
-        env: { ...process.env, FORCE_COLOR: '1' },
-      });
-      log.success('Convex auth initialized.');
-    } catch {
+    // ── Step A: npx convex dev --once ───────────────────────────────────────
+    // Interactive — user picks team, project name, cloud/local, AI files
+    console.log();
+    log.divider();
+    log.info(chalk.bold('Step 1/2 — Setting up Convex backend'));
+    log.info(
+      chalk.dim(
+        'Select your team, enter a project name, and choose deployment type.',
+      ),
+    );
+    console.log();
+
+    const convexInitOk = runInteractive('npx convex dev --once', projectRoot);
+
+    if (!convexInitOk) {
       log.warn(
-        'Convex auth initialization failed. You may need to run `npx @convex-dev/auth` manually.',
+        'Convex initialization did not complete successfully.\n' +
+          `  You can retry with ${chalk.cyan('npx convex dev --once')} in the project directory.`,
+      );
+
+      const { continueAnyway } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'continueAnyway',
+          message: 'Continue with the build anyway?',
+          default: false,
+        },
+      ]);
+
+      if (!continueAnyway) {
+        log.info(
+          'Exiting. Fix the issue, then run `bna build` again in the project directory.',
+        );
+        return;
+      }
+    } else {
+      log.success('Convex backend initialized and deployed.');
+    }
+
+    // ── Step B: npx @convex-dev/auth ────────────────────────────────────────
+    // Interactive — sets JWT keys, validates auth.ts, http.ts, etc.
+    console.log();
+    log.divider();
+    log.info(chalk.bold('Step 2/2 — Setting up Convex Auth'));
+    log.info(
+      chalk.dim(
+        'This configures JWT keys and validates your auth setup. Follow the prompts.',
+      ),
+    );
+    console.log();
+
+    const authInitOk = runInteractive('npx @convex-dev/auth', projectRoot);
+
+    if (!authInitOk) {
+      log.warn(
+        'Convex Auth setup did not complete successfully.\n' +
+          `  You can run ${chalk.cyan('npx @convex-dev/auth')} manually later.`,
+      );
+    } else {
+      log.success('Convex Auth configured.');
+    }
+
+    // ── Step C: Redeploy after auth setup ───────────────────────────────────
+    // Auth setup may have set env vars / modified files, so push once more
+    console.log();
+    log.info('Deploying backend with auth configuration...');
+    const redeployOk = runInteractive('npx convex dev --once', projectRoot);
+    if (redeployOk) {
+      log.success('Backend deployed with auth.');
+    } else {
+      log.warn(
+        'Redeploy after auth setup failed — the AI agent can still proceed.',
       );
     }
   }
 
   // ── 10. Run the AI agent ──────────────────────────────────────────────────
+  console.log();
+  log.divider();
+  log.info(chalk.bold('Starting AI Agent...'));
+  log.info(
+    chalk.dim('The agent will customize your app based on the description.'),
+  );
+  log.info(
+    chalk.dim('Every file it writes will be streamed to this terminal.'),
+  );
+  console.log();
+
   const chatInitialId = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   await runAgent({
@@ -274,30 +371,32 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     },
   });
 
-  // ── 11. Post-agent: deploy Convex and start dev servers ───────────────────
+  // ── 11. Post-agent: deploy AI changes ─────────────────────────────────────
   if (stack === 'expo-convex') {
+    console.log();
     log.divider();
-    log.info('Starting Convex backend...');
+    log.info('Deploying AI-generated changes to Convex...');
 
-    // Push schema + functions once
-    try {
-      execSync('npx convex dev --once', {
-        cwd: projectRoot,
-        stdio: 'inherit',
-        env: { ...process.env, FORCE_COLOR: '1' },
-      });
-      log.success('Convex backend deployed.');
-    } catch {
+    const finalDeployOk = runInteractive('npx convex dev --once', projectRoot);
+    if (finalDeployOk) {
+      log.success('Backend deployed with AI-generated changes.');
+    } else {
       log.warn(
-        'Convex initial deploy failed. You may need to run `npx convex dev` manually.',
+        'Deploy failed. You may need to fix schema errors and run ' +
+          chalk.cyan('npx convex dev') +
+          ' manually.',
       );
     }
+  }
 
-    // Start `npx convex dev` in the background
+  // ── 12. Start dev servers ─────────────────────────────────────────────────
+  if (stack === 'expo-convex') {
+    // Start `npx convex dev` in the background (watches for changes)
+    console.log();
     log.info('Starting Convex dev server (background)...');
     const convexProc = spawn('npx', ['convex', 'dev'], {
       cwd: projectRoot,
-      stdio: 'inherit',
+      stdio: 'ignore',
       detached: true,
       env: { ...process.env, FORCE_COLOR: '1' },
       shell: true,
@@ -306,14 +405,14 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     log.success('Convex dev server running in background.');
   }
 
-  // Start Expo
-  log.info('Starting Expo dev build...');
+  // Start Expo dev build
+  console.log();
   const expoCommand = isMacOS() ? 'npx expo run:ios' : 'npx expo run:android';
   const platform = isMacOS() ? 'iOS' : 'Android';
 
-  log.info(
-    `Detected ${chalk.cyan(platform)} — running ${chalk.cyan(expoCommand)}`,
-  );
+  log.info(`Starting Expo dev build for ${chalk.cyan(platform)}...`);
+  log.info(chalk.dim(`Running: ${expoCommand}`));
+  console.log();
 
   const expoProc = spawn(expoCommand, [], {
     cwd: projectRoot,
@@ -328,7 +427,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
   });
 
-  // ── 12. Final instructions ────────────────────────────────────────────────
+  // ── 13. Final instructions ────────────────────────────────────────────────
   console.log();
   log.divider();
   log.success(chalk.bold('Your app is ready!'));
