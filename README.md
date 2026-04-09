@@ -40,7 +40,6 @@ bna build
 
 The CLI will interactively ask for:
 
-- **Project name** (auto-detected from directory if empty)
 - **Stack** — Expo only, or Expo + Convex (full-stack)
 - **Prompt** — describe your app in natural language
 
@@ -50,14 +49,14 @@ Or pass everything inline:
 bna build --name my-fitness-app --stack expo-convex --prompt "A fitness tracker with workout logging, progress charts, and a dark theme"
 ```
 
-### 3. Run your app
+### What happens under the hood
 
-```bash
-cd my-fitness-app
-npx convex dev          # Start backend (keep running)
-npx expo run:ios        # iOS simulator
-npx expo run:android    # Android emulator
-```
+1. **Template copied** — The correct template (expo or expo-convex) is copied to your project directory
+2. **Dependencies installed** — `npm install` runs automatically
+3. **Convex auth initialized** — `npx @convex-dev/auth` runs for expo-convex projects
+4. **AI agent runs** — Customizes theme, components, schema, functions, and screens based on your prompt
+5. **File streaming** — Every file the agent writes is streamed to your terminal with syntax-highlighted line numbers
+6. **Auto-start** — Convex dev server starts in background, then Expo dev build launches (iOS on macOS, Android otherwise)
 
 ## Commands
 
@@ -73,12 +72,30 @@ npx expo run:android    # Android emulator
 
 The CLI runs a local AI agent powered by Claude that:
 
-1. **Plans** the app architecture (theme → components → schema → screens)
-2. **Writes files** directly to your file system
-3. **Runs commands** (npm install, convex deploy) via real shell
-4. **Iterates** on errors automatically (up to 30 rounds)
+1. **Copies** the project template matching your chosen stack
+2. **Installs** dependencies automatically
+3. **Customizes** the app — theme, components, schema, backend, screens
+4. **Streams** every file write to your terminal so you see exactly what's happening
+5. **Starts** Convex backend + Expo dev build automatically
+6. **Iterates** on errors automatically (up to 30 rounds)
 
 The agent uses the same system prompts and architecture patterns as the [BNA web app](https://ai.ahmedbna.com), ensuring production-quality output with proper Expo dev builds, Convex backend, file-based routing, and reusable UI components.
+
+## Agent Tools
+
+The AI agent has access to these tools:
+
+| Tool                | Description                                          |
+| ------------------- | ---------------------------------------------------- |
+| `createFile`        | Write a complete file (streamed to terminal)         |
+| `editFile`          | Replace a specific string in a file                  |
+| `viewFile`          | Read file contents (with optional line range)        |
+| `readMultipleFiles` | Read several files at once                           |
+| `listDirectory`     | List directory contents (supports recursive)         |
+| `runCommand`        | Execute shell commands (for installing new packages) |
+| `deleteFile`        | Delete a file or empty directory                     |
+| `renameFile`        | Move/rename a file                                   |
+| `searchFiles`       | Search for patterns across the codebase              |
 
 ## Architecture
 
@@ -88,18 +105,23 @@ bna/
 │   ├── index.ts              # CLI entry point (Commander.js)
 │   ├── commands/
 │   │   ├── login.ts           # Browser-based OAuth flow
-│   │   ├── build.ts        # Main generation flow
+│   │   ├── build.ts           # Template copy → install → agent → auto-start
 │   │   ├── credits.ts         # Credit balance check
 │   │   ├── logout.ts          # Clear auth
 │   │   └── config.ts          # CLI configuration
 │   ├── agent/
-│   │   ├── agent.ts           # Core agentic loop (Anthropic API)
-│   │   ├── prompts.ts         # System prompts (from bna-agent)
-│   │   └── tools.ts           # Tool definitions + executors
+│   │   ├── agent.ts           # Core agentic loop (streaming SSE)
+│   │   ├── prompts.ts         # System prompts
+│   │   ├── prompts/           # Modular prompt sections
+│   │   └── tools.ts           # Tool definitions + executors + terminal streaming
 │   └── utils/
 │       ├── store.ts           # Persistent config (Conf)
 │       ├── logger.ts          # Pretty CLI output
-│       └── credits.ts         # Credit management
+│       ├── credits.ts         # Credit management
+│       ├── shell.ts           # Terminal output cleaning
+│       └── stripIndent.ts     # Template literal helper
+├── templates/
+│   └── expo-convex/           # Full-stack template (copied per project)
 ├── build.js                   # esbuild bundler
 └── package.json
 ```

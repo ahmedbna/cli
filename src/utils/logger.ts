@@ -15,8 +15,7 @@ export const log = {
     const icon = action === 'create' ? chalk.green('+') : chalk.yellow('~');
     console.log(`  ${icon} ${chalk.dim(path)}`);
   },
-  command: (cmd: string) =>
-    console.log(chalk.dim('  $ ') + chalk.white(cmd)),
+  command: (cmd: string) => console.log(chalk.dim('  $ ') + chalk.white(cmd)),
   divider: () => console.log(chalk.dim('─'.repeat(60))),
   banner: () => {
     console.log(
@@ -29,14 +28,17 @@ export const log = {
           margin: { top: 1, bottom: 1, left: 0, right: 0 },
           borderColor: 'yellow',
           borderStyle: 'round',
-        }
-      )
+        },
+      ),
     );
   },
   credits: (remaining: number) => {
-    const color = remaining > 20 ? chalk.green : remaining > 5 ? chalk.yellow : chalk.red;
+    const color =
+      remaining > 20 ? chalk.green : remaining > 5 ? chalk.yellow : chalk.red;
     console.log(
-      chalk.dim('Credits: ') + color.bold(String(remaining)) + chalk.dim(' remaining')
+      chalk.dim('Credits: ') +
+        color.bold(String(remaining)) +
+        chalk.dim(' remaining'),
     );
   },
   stream: (text: string) => process.stdout.write(text),

@@ -12,7 +12,7 @@ export const lookupDocsParameters = z.object({
 
 export function lookupDocsTool() {
   return {
-    description: `Lookup documentation for component features. Valid topics: \`presence\`, \`dev-build\`, \`eas-build\``,
+    description: `Lookup documentation for component features.`,
     parameters: lookupDocsParameters,
   };
 }

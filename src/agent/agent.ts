@@ -123,13 +123,23 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     {
       role: 'user',
       content:
-        `Create a full-stack mobile application with the following description:\n\n${prompt}\n\n` +
+        `You are BNA, an expert AI assistant and senior software engineer create app with the following description:\n\n${prompt}\n\n` +
         `The project root is: ${projectRoot}\n` +
         `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n` +
-        `Build all the necessary files and set up the project. ` +
-        `Start by planning the architecture, then create the theme, UI components, ` +
-        `schema, backend functions, and screens. ` +
-        `After writing all files, run the necessary setup commands.`,
+        `The project template has already been copied and dependencies installed. ` +
+        `The template includes: app/_layout.tsx, app/(home)/_layout.tsx, app/(home)/index.tsx, ` +
+        `app/(home)/settings.tsx, components/auth/, components/ui/button.tsx, components/ui/spinner.tsx, ` +
+        `convex/schema.ts, convex/auth.ts, convex/users.ts, convex/http.ts, theme/colors.ts, hooks/.\n\n` +
+        `DO NOT run \`npx create-expo-app\` or \`npm init\` — the project is already scaffolded.\n` +
+        `DO NOT run \`npm install\` for base dependencies — they are already installed.\n` +
+        `DO NOT run \`npx convex dev\` — it will be started automatically after you finish.\n\n` +
+        `Your job is to customize this template to match the user's description:\n` +
+        `1. Design a unique theme (colors.ts) for this specific app\n` +
+        `2. Build or update UI components in components/ui/\n` +
+        `3. Add tables to the Convex schema (keep ...authTables and users table)\n` +
+        `4. Write Convex query/mutation functions\n` +
+        `5. Build the screens\n` +
+        `6. Only run \`npx expo install <pkg>\` if you need NEW packages not in the template`,
     },
   ];
 
@@ -222,15 +232,10 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
         // Execute the tool
         const toolName = block.name as ToolName;
-        log.info(
-          chalk.dim('Tool: ') +
-            chalk.cyan(toolName) +
-            (toolName === 'createFile'
-              ? chalk.dim(` → ${block.input.filePath}`)
-              : toolName === 'runCommand'
-                ? chalk.dim(` → ${block.input.command}`)
-                : ''),
-        );
+
+        // Display tool usage info
+        const toolLabel = getToolLabel(toolName, block.input);
+        log.info(chalk.dim('Tool: ') + chalk.cyan(toolName) + toolLabel);
 
         let result: string;
         try {
@@ -293,6 +298,33 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   console.log();
 }
 
+// ─── Tool label helper ───────────────────────────────────────────────────────
+
+function getToolLabel(toolName: ToolName, input: Record<string, any>): string {
+  switch (toolName) {
+    case 'createFile':
+      return chalk.dim(` → ${input.filePath}`);
+    case 'editFile':
+      return chalk.dim(` → ${input.filePath}`);
+    case 'runCommand':
+      return chalk.dim(` → ${input.command}`);
+    case 'viewFile':
+      return chalk.dim(` → ${input.filePath}`);
+    case 'listDirectory':
+      return chalk.dim(` → ${input.dirPath ?? '.'}`);
+    case 'deleteFile':
+      return chalk.dim(` → ${input.filePath}`);
+    case 'renameFile':
+      return chalk.dim(` → ${input.oldPath} → ${input.newPath}`);
+    case 'searchFiles':
+      return chalk.dim(` → "${input.pattern}"`);
+    case 'readMultipleFiles':
+      return chalk.dim(` → ${input.filePaths?.length ?? 0} files`);
+    default:
+      return '';
+  }
+}
+
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
 
 async function fetchStream(
@@ -334,7 +366,7 @@ async function readStream(
   let textStarted = false;
 
   const spinner = ora({
-    text: chalk.dim(`Thinking... (round ${round + 1})`),
+    text: chalk.dim(`Thinking... (round ${round + 1}/${MAX_ROUNDS})`),
     color: 'yellow',
   }).start();
 
@@ -389,6 +421,12 @@ async function readStream(
                 process.stdout.write(chalk.white(text));
               }
             },
+            onToolStart: () => {
+              if (!textStarted) {
+                spinner.stop();
+                textStarted = true;
+              }
+            },
             onStopReason: (reason) => {
               stopReason = reason;
             },
@@ -424,11 +462,13 @@ function processEvent(
     blocks: StreamBlock[];
     indexToBlock: Map<number, StreamBlock>;
     onText: (text: string) => void;
+    onToolStart: () => void;
     onStopReason: (reason: string) => void;
     onUsage: (input: number, output: number) => void;
   },
 ) {
-  const { blocks, indexToBlock, onText, onStopReason, onUsage } = ctx;
+  const { blocks, indexToBlock, onText, onToolStart, onStopReason, onUsage } =
+    ctx;
 
   switch (event.type) {
     case 'message_start': {
@@ -451,6 +491,7 @@ function processEvent(
           inputJson: '',
           input: {},
         };
+        onToolStart();
       }
       blocks.push(block);
       indexToBlock.set(event.index, block);

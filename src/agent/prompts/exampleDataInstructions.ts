@@ -1,4 +1,4 @@
-import { stripIndents } from '../../utils/stripIndent';
+import { stripIndents } from '../../utils/stripIndent.js';
 
 export function exampleDataInstructions() {
   return stripIndents`

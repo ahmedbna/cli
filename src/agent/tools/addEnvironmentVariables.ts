@@ -8,7 +8,7 @@ export const addEnvironmentVariablesParameters = z.object({
 
 export function addEnvironmentVariablesTool() {
   return {
-    description: `Add environment variables to the Convex deployment. The user still needs to manually add the values in the Convex dashboard page this tool opens.`,
+    description: `Add environment variables to the Convex deployment.`,
     parameters: addEnvironmentVariablesParameters,
   };
 }

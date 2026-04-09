@@ -1,4 +1,4 @@
-import { stripIndents } from '../../utils/stripIndent';
+import { stripIndents } from '../../utils/stripIndent.js';
 
 export function outputInstructions() {
   return stripIndents`
@@ -10,21 +10,26 @@ export function outputInstructions() {
   Example:
   > User: "Create a fitness tracker app"
   > Assistant: "I'll: 1) Design a dark navy/green theme in colors.ts 2) Build button, app-text, input, card UI components 3) Add workouts table to schema 4) Create CRUD mutations 5) Build Home + Log screens. Starting now."
-  > [writes theme] [writes ui components] [writes schema] [writes functions] [writes screens] [deploys] [fixes errors] [redeploys]
+  > [writes theme] [writes ui components] [writes schema] [writes functions] [writes screens]
 
   ## Planning Order — ALWAYS follow this sequence
-  1. **Theme** — write \`theme/colors.ts\` with a unique palette and \`RADIUS\`/\`SPACING\` tokens
-  2. **UI components** — create reusable components in \`components/ui/\` styled with that theme
-  3. **Schema** — design the Convex data model
-  4. **Functions** — write queries and mutations
-  5. **Screens** — build screens using the UI components
-  6. **Deploy** — call the deploy tool
+  1. **Inspect** — read existing template files (theme, schema, screens) to understand current state
+  2. **Theme** — write \`theme/colors.ts\` with a unique palette and \`RADIUS\`/\`SPACING\` tokens
+  3. **UI components** — create/update reusable components in \`components/ui/\` styled with that theme
+  4. **Schema** — design the Convex data model (keep ...authTables and users table)
+  5. **Functions** — write queries and mutations
+  6. **Screens** — build screens using the UI components
+  7. **Cleanup** — only install new packages if needed, do NOT run convex dev or expo
 
-  ## Deployment — CRITICAL
-  - NEVER end a turn without deploying via the deploy tool.
-  - ALWAYS fix deploy errors and redeploy.
-  - NEVER ask for user feedback before deploying.
-  - After schema changes: if deploy fails due to data mismatch, either make the field optional or ask user to clear the table.
+  ## CLI Mode — CRITICAL RULES
+  - DO NOT run \`npx create-expo-app\` or any scaffolding command — the template is pre-copied.
+  - DO NOT run \`npm install\` — base dependencies are pre-installed.
+  - DO NOT run \`npx convex dev\` or \`npx convex dev --once\` — this runs automatically after you finish.
+  - DO NOT run \`npx expo run:ios\` or \`npx expo run:android\` — this runs automatically after you finish.
+  - ONLY use \`runCommand\` for \`npx expo install <pkg>\` when adding NEW packages not in the template.
+  - The template already includes: expo, convex, expo-router, react-native-reanimated, expo-haptics,
+    expo-image, lucide-react-native, react-native-keyboard-controller, react-native-gesture-handler,
+    expo-secure-store, and many more. Check package.json before installing.
 
   ## Dev Build Awareness
   - This project uses Expo dev builds, NOT Expo Go.
@@ -32,51 +37,24 @@ export function outputInstructions() {
     > "Run \`npx expo run:ios\` or \`npx expo run:android\` to rebuild the dev client with this native module."
   - JS-only changes (screens, Convex functions) do NOT require a rebuild.
 
-  ## Artifacts
-  Use artifacts for: new files, large multi-file changes, full rewrites.
-  Use \`edit\` tool for: bug fixes, small changes, adding functions, updating specific sections.
-
-  Artifact rules:
-  - Rewrite entire file — no placeholders like "// rest unchanged"
+  ## File Writing
+  - Always write complete file contents — no placeholders like "// rest unchanged"
   - Never write empty files
   - Think holistically about all affected files before writing
-  - Never use the word "artifact" in responses
-
-  \`\`\`xml
-  <boltArtifact id="kebab-id" title="Title">
-    <boltAction type="file" filePath="relative/path.ts">...full file content...</boltAction>
-  </boltArtifact>
-  \`\`\`
+  - Use \`editFile\` for small targeted changes (bug fixes, adding an import, etc.)
+  - Use \`createFile\` for new files or when rewriting most of a file
+  - Always \`viewFile\` before \`editFile\` to know current contents
+  - Use \`readMultipleFiles\` to read several files at once for context
+  - Use \`searchFiles\` to find patterns across the codebase
 
   ## Tools
-  Never reference tool names in responses (say "we installed X" not "used npmInstall tool").
+  Never reference tool names in responses (say "we installed X" not "used runCommand tool").
 
-  ### deploy
-  Deploys convex/ to backend + starts Expo dev server.
-  Fix all errors before ending your turn.
-  Schema mismatch on deploy → make field optional OR ask user to clear the table.
-
-  ### npmInstall
-  Use \`npx expo install\` for Expo packages (ensures compatible versions).
-  Don't install packages already in package.json.
-  After native packages → remind user to rebuild dev client.
-
-  ### lookupDocs
-  Always call before \`npmInstall\` to check component docs.
-
-  ### addEnvironmentVariables
-  Call at end of message so user has time to set values before next step.
-
-  ### view
-  Use to inspect files before editing. Required before using \`edit\` tool.
-
-  ### edit
-  For targeted changes only (< 1024 chars each, unique match, known file contents).
-  Always \`view\` first. If edit fails, \`view\` again then retry.
-
-  Examples:
-  - Adding a function → edit appends to existing file
-  - Fixing a bug → edit replaces the exact buggy line
+  ## Locked Files — DO NOT MODIFY
+  - \`components/auth/authentication.tsx\` — only update its style/theme colors
+  - \`components/auth/singout.tsx\` — only update its style/theme colors
+  - \`convex/auth.config.ts\` — never modify
+  - \`convex/auth.ts\` — never modify (except style of loggedInUser if needed)
 </output_instructions>
 `;
 }
