@@ -7,9 +7,8 @@ import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { log } from '../utils/logger.js';
-import { ensureValidAuth } from '../utils/auth.js';
+import { ensureValidAuth, revalidateAuth } from '../utils/auth.js';
 import { checkCredits, deductCredits } from '../utils/credits.js';
-import { getAuthToken } from '../utils/store.js';
 import { runAgent } from '../agent/agent.js';
 
 interface GenerateOptions {
@@ -54,7 +53,6 @@ function copyTemplateDir(src: string, dest: string): void {
 
 /**
  * Resolve the template directory. Works both in development and when installed as a package.
- * Looks for: <package-root>/templates/<stack>/
  */
 function resolveTemplateDir(stack: string): string {
   let dir = path.dirname(new URL(import.meta.url).pathname);
@@ -96,13 +94,11 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
 
   // ═══════════════════════════════════════════════════════════════════════════
   // STEP 1: Validate authentication FIRST (before ANY expensive operations)
-  // This calls the BNA server to verify the token is still valid.
-  // If expired, we fail fast HERE instead of after 5+ minutes of setup.
   // ═══════════════════════════════════════════════════════════════════════════
   const authResult = await ensureValidAuth();
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 2: Check credits (also validates token server-side as a side effect)
+  // STEP 2: Check credits
   // ═══════════════════════════════════════════════════════════════════════════
   log.info('Checking credits...');
   const { credits, hasEnough } = await checkCredits();
@@ -208,7 +204,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   console.log();
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 4: Scaffold project (now safe to do expensive operations)
+  // STEP 4: Scaffold project
   // ═══════════════════════════════════════════════════════════════════════════
 
   log.info('Scaffolding project from template...');
@@ -327,34 +323,16 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 6: Re-validate auth before starting the agent
-  // npm install + convex setup can take 5+ minutes — token may have expired
+  // STEP 6: Re-validate and REFRESH auth before the agent
+  // npm install + convex setup can take 5+ minutes — token may have expired.
+  // revalidateAuth() attempts token refresh and returns a FRESH token.
   // ═══════════════════════════════════════════════════════════════════════════
 
   log.info('Re-verifying authentication before AI agent...');
-  try {
-    const token = getAuthToken();
-
-    const resp = await fetch('https://ai.ahmedbna.com/api/cli-credits', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (resp.status === 401) {
-      log.error(
-        'Your authentication expired during setup.\n' +
-          `  Run ${chalk.cyan('bna login')} to re-authenticate, then run ${chalk.cyan('bna build')} again.\n` +
-          '  Your project scaffolding is preserved — no work was lost.',
-      );
-      process.exit(1);
-    }
-
-    log.success('Authentication verified.');
-  } catch {
-    log.warn('Could not re-verify auth — proceeding anyway.');
-  }
+  const freshToken = await revalidateAuth();
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 7: Run the AI agent
+  // STEP 7: Run the AI agent with the FRESH token
   // ═══════════════════════════════════════════════════════════════════════════
 
   console.log();
@@ -372,6 +350,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectRoot,
     prompt,
     stack,
+    authToken: freshToken, // Pass the fresh token directly
     onCreditsUsed: async (input, output) => {
       await deductCredits(input, output, chatInitialId);
     },

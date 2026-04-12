@@ -51,7 +51,7 @@ bna build --name my-fitness-app --stack expo-convex --prompt "A fitness tracker 
 
 ### What happens under the hood
 
-1. **Template copied** — The correct template (expo or expo-convex) is copied to your project directory
+1. **Initializing the app** — The correct template (expo or expo-convex) is copied to your project directory
 2. **Dependencies installed** — `npm install` runs automatically
 3. **Convex auth initialized** — `npx @convex-dev/auth` runs for expo-convex projects
 4. **AI agent runs** — Customizes theme, components, schema, functions, and screens based on your prompt
@@ -99,7 +99,7 @@ The AI agent has access to these tools:
 
 ## Architecture
 
-```
+```bash
 bna/
 ├── src/
 │   ├── index.ts              # CLI entry point (Commander.js)

@@ -3,11 +3,15 @@
 //
 // Uses /api/cli-chat which streams Anthropic SSE events directly.
 // The CLI reads the stream, accumulates content, executes tools, and loops.
+//
+// Auth: uses CLI JWT (30-day expiry) passed via authToken option.
+// On 401, automatically attempts token refresh and retries once.
 
 import { generalSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
 import { log } from '../utils/logger.js';
 import { getAuthToken } from '../utils/store.js';
+import { refreshAuthToken } from '../utils/auth.js';
 import chalk from 'chalk';
 import ora from 'ora';
 
@@ -18,6 +22,8 @@ export interface AgentOptions {
   projectRoot: string;
   prompt: string;
   stack: 'expo' | 'expo-convex';
+  /** Pre-validated auth token — avoids reading a stale token from the store */
+  authToken?: string;
   onCreditsUsed?: (input: number, output: number) => Promise<void>;
 }
 
@@ -96,7 +102,7 @@ interface ToolUseBlock {
   type: 'tool_use';
   id: string;
   name: string;
-  inputJson: string; // accumulated partial JSON
+  inputJson: string;
   input: Record<string, any>;
 }
 
@@ -127,7 +133,6 @@ function createShimmerSpinner(text: string) {
     color: 'magenta',
   });
 
-  // Override the render to add shimmer color cycling
   const interval = setInterval(() => {
     const color = SHIMMER_COLORS[colorIdx % SHIMMER_COLORS.length];
     spinner.text = color(text);
@@ -156,12 +161,17 @@ function createShimmerSpinner(text: string) {
 export async function runAgent(options: AgentOptions): Promise<void> {
   const { projectRoot, prompt, stack } = options;
 
+  // Use the pre-validated token if provided, otherwise read from store
   let authToken: string;
-  try {
-    authToken = getAuthToken();
-  } catch {
-    log.error('Not authenticated. Run `bna login` first.');
-    process.exit(1);
+  if (options.authToken) {
+    authToken = options.authToken;
+  } else {
+    try {
+      authToken = getAuthToken();
+    } catch {
+      log.error('Not authenticated. Run `bna login` first.');
+      process.exit(1);
+    }
   }
 
   const systemPrompt = generalSystemPrompt({ stack });
@@ -215,6 +225,46 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       process.exit(1);
     }
 
+    // ── Handle 401 with automatic token refresh + retry ───────────────────
+    if (response.status === 401) {
+      log.warn('Auth token expired mid-session, attempting refresh...');
+      const refreshedToken = await refreshAuthToken();
+
+      if (refreshedToken) {
+        authToken = refreshedToken;
+        log.success('Token refreshed, retrying...');
+
+        // Retry the request with the fresh token
+        try {
+          response = await fetchStream(
+            authToken,
+            systemPrompt,
+            messages,
+            toolDefinitions,
+          );
+        } catch (err: any) {
+          log.error(
+            `Network error after refresh: ${err.message ?? 'Unknown error'}`,
+          );
+          process.exit(1);
+        }
+
+        // If still 401 after refresh, give up
+        if (response.status === 401) {
+          log.error(
+            'Authentication expired. Run `bna login` to re-authenticate.',
+          );
+          process.exit(1);
+        }
+      } else {
+        log.error(
+          'Authentication expired and could not be refreshed.\n' +
+            `  Run ${chalk.cyan('bna login')} to re-authenticate.`,
+        );
+        process.exit(1);
+      }
+    }
+
     if (!response.ok) {
       let errMsg = `API request failed (${response.status})`;
       let errBody = '';
@@ -232,11 +282,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         // ignore parse errors
       }
 
-      if (response.status === 401) {
-        log.error(
-          'Authentication expired. Run `bna login` to re-authenticate.',
-        );
-      } else if (response.status === 402) {
+      if (response.status === 402) {
         log.error(
           'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
         );
@@ -280,7 +326,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
           input: block.input,
         });
 
-        // Execute the tool — the tool executor now handles its own display
         const toolName = block.name as ToolName;
 
         let result: string;
@@ -384,12 +429,9 @@ async function readStream(
   let inputTokens = 0;
   let outputTokens = 0;
 
-  // Map from block index → block in `blocks` array
   const indexToBlock = new Map<number, StreamBlock>();
-
   let textStarted = false;
 
-  // Use shimmer spinner instead of plain ora
   const spinner = createShimmerSpinner(
     `Thinking... (round ${round + 1}/${MAX_ROUNDS})`,
   );
@@ -402,7 +444,6 @@ async function readStream(
 
   const decoder = new TextDecoder();
   const reader = body.getReader();
-
   let buffer = '';
 
   try {
@@ -412,14 +453,12 @@ async function readStream(
 
       buffer += decoder.decode(value, { stream: true });
 
-      // Process all complete SSE messages in the buffer
       const lines = buffer.split('\n');
-      // Keep the last (potentially incomplete) line in the buffer
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed === ':') continue; // ping / empty
+        if (!trimmed || trimmed === ':') continue;
 
         if (trimmed.startsWith('data: ')) {
           const data = trimmed.slice(6).trim();
@@ -440,7 +479,7 @@ async function readStream(
                 if (!textStarted) {
                   spinner.stop();
                   textStarted = true;
-                  console.log(); // blank line before text
+                  console.log();
                 }
                 process.stdout.write(chalk.white(text));
               }
@@ -507,7 +546,6 @@ function processEvent(
       if (cb.type === 'text') {
         block = { type: 'text', text: cb.text ?? '' };
       } else {
-        // tool_use
         block = {
           type: 'tool_use',
           id: cb.id,
