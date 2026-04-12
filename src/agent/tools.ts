@@ -1,12 +1,11 @@
 // src/agent/tools.ts
 // Tool definitions and executors for the CLI agent
-// Streams file content to the terminal so users can see what's being written
+// Shows animated action labels instead of streaming full file content
 
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { log } from '../utils/logger.js';
-import chalk from 'chalk';
+import chalk, { type ChalkInstance } from 'chalk';
 
 export type ToolName =
   | 'createFile'
@@ -204,77 +203,53 @@ export const toolDefinitions = [
   },
 ];
 
-// ─── Stream file content to terminal ─────────────────────────────────────────
+// ─── Shimmer animation for action labels ─────────────────────────────────────
 
-const FILE_EXTENSIONS_WITH_SYNTAX: Record<string, string> = {
-  '.ts': 'TypeScript',
-  '.tsx': 'TSX',
-  '.js': 'JavaScript',
-  '.jsx': 'JSX',
-  '.json': 'JSON',
-  '.css': 'CSS',
-  '.md': 'Markdown',
-  '.html': 'HTML',
-};
+const SHIMMER_FRAMES = ['░', '▒', '▓', '█', '▓', '▒'];
 
-function streamFileToTerminal(
-  filePath: string,
-  content: string,
-  action: 'create' | 'update',
-): void {
-  const ext = path.extname(filePath);
-  const lang = FILE_EXTENSIONS_WITH_SYNTAX[ext] ?? '';
+function shimmerText(text: string, color: ChalkInstance): void {
+  const frames = SHIMMER_FRAMES;
+  const totalFrames = frames.length * 2;
+  let frame = 0;
 
-  // Header
-  const icon =
-    action === 'create' ? chalk.green('+ CREATE') : chalk.yellow('~ UPDATE');
-  const header = `${icon} ${chalk.cyan(filePath)}${lang ? chalk.dim(` (${lang})`) : ''}`;
-
-  console.log();
-  console.log(chalk.dim('┌─') + header);
-  console.log(chalk.dim('│'));
-
-  // Stream the content line by line with line numbers
-  const lines = content.split('\n');
-  const maxLineNum = String(lines.length).length;
-
-  // If the file is huge, show first/last 30 lines
-  const MAX_DISPLAY_LINES = 80;
-  if (lines.length > MAX_DISPLAY_LINES) {
-    const showTop = 30;
-    const showBottom = 20;
-
-    for (let i = 0; i < showTop; i++) {
-      const lineNum = chalk.dim(String(i + 1).padStart(maxLineNum, ' '));
-      console.log(
-        chalk.dim('│ ') + lineNum + chalk.dim(' │ ') + chalk.white(lines[i]),
-      );
-    }
-
-    console.log(
-      chalk.dim('│ ') +
-        chalk.dim('·'.padStart(maxLineNum, ' ')) +
-        chalk.dim(' │ ') +
-        chalk.dim(`... ${lines.length - showTop - showBottom} more lines ...`),
+  const interval = setInterval(() => {
+    const shimmer = frames[frame % frames.length];
+    process.stdout.write(
+      `\r  ${color(shimmer)} ${color(text)} ${color(shimmer)}`,
     );
+    frame++;
+    if (frame >= totalFrames) {
+      clearInterval(interval);
+      process.stdout.write(`\r  ${color('✓')} ${color(text)}   \n`);
+    }
+  }, 60);
 
-    for (let i = lines.length - showBottom; i < lines.length; i++) {
-      const lineNum = chalk.dim(String(i + 1).padStart(maxLineNum, ' '));
-      console.log(
-        chalk.dim('│ ') + lineNum + chalk.dim(' │ ') + chalk.white(lines[i]),
-      );
-    }
-  } else {
-    for (let i = 0; i < lines.length; i++) {
-      const lineNum = chalk.dim(String(i + 1).padStart(maxLineNum, ' '));
-      console.log(
-        chalk.dim('│ ') + lineNum + chalk.dim(' │ ') + chalk.white(lines[i]),
-      );
-    }
+  // Block until animation completes
+  const waitMs = totalFrames * 60 + 20;
+  const start = Date.now();
+  while (Date.now() - start < waitMs) {
+    // busy-wait to keep the animation visible
   }
+}
 
-  console.log(chalk.dim('│'));
-  console.log(chalk.dim('└─') + chalk.dim(` ${lines.length} lines`));
+function showActionLabel(
+  action: 'create' | 'update' | 'delete' | 'rename' | 'run',
+  filePath: string,
+  lines?: number,
+): void {
+  const labels: Record<string, { verb: string; color: ChalkInstance }> = {
+    create: { verb: 'Creating', color: chalk.green },
+    update: { verb: 'Updating', color: chalk.yellow },
+    delete: { verb: 'Removing', color: chalk.red },
+    rename: { verb: 'Moving', color: chalk.blue },
+    run: { verb: 'Running', color: chalk.magenta },
+  };
+
+  const { verb, color } = labels[action];
+  const lineInfo = lines ? chalk.dim(` (${lines} lines)`) : '';
+  const label = `${verb} ${chalk.cyan(filePath)}${lineInfo}`;
+
+  shimmerText(label, color);
 }
 
 // ─── Tool Executors ─────────────────────────────────────────────────────────
@@ -291,14 +266,12 @@ export function executeCreateFile(
   const existed = fs.existsSync(fullPath);
   fs.writeFileSync(fullPath, args.content, 'utf-8');
 
-  // Stream file content to terminal so the user sees what's being written
-  streamFileToTerminal(
-    args.filePath,
-    args.content,
-    existed ? 'update' : 'create',
-  );
+  const lines = args.content.split('\n').length;
 
-  return `Successfully ${existed ? 'updated' : 'created'} ${args.filePath} (${args.content.split('\n').length} lines)`;
+  // Show animated action label instead of streaming file content
+  showActionLabel(existed ? 'update' : 'create', args.filePath, lines);
+
+  return `Successfully ${existed ? 'updated' : 'created'} ${args.filePath} (${lines} lines)`;
 }
 
 export function executeEditFile(
@@ -325,19 +298,12 @@ export function executeEditFile(
   const newContent = content.replace(args.oldText, args.newText);
   fs.writeFileSync(fullPath, newContent, 'utf-8');
 
-  // Show the edit in terminal
-  console.log();
-  console.log(chalk.yellow('~ EDIT') + ' ' + chalk.cyan(args.filePath));
-  console.log(
-    chalk.dim('  - ') + chalk.red(args.oldText.split('\n')[0].trim()),
-  );
-  console.log(
-    chalk.dim('  + ') + chalk.green(args.newText.split('\n')[0].trim()),
-  );
-  if (args.oldText.includes('\n') || args.newText.includes('\n')) {
-    const oldLines = args.oldText.split('\n').length;
-    const newLines = args.newText.split('\n').length;
-    console.log(chalk.dim(`    (${oldLines} lines → ${newLines} lines)`));
+  // Show animated action label
+  const oldLines = args.oldText.split('\n').length;
+  const newLines = args.newText.split('\n').length;
+  showActionLabel('update', args.filePath);
+  if (oldLines !== newLines) {
+    console.log(chalk.dim(`    ${oldLines} lines → ${newLines} lines`));
   }
 
   return `Successfully edited ${args.filePath}`;
@@ -347,7 +313,7 @@ export function executeRunCommand(
   projectRoot: string,
   args: { command: string; timeout?: number },
 ): string {
-  log.command(args.command);
+  showActionLabel('run', args.command);
   try {
     const output = execSync(args.command, {
       cwd: projectRoot,
@@ -358,20 +324,20 @@ export function executeRunCommand(
     });
     const trimmed = output.trim();
 
-    // Show truncated output in terminal
+    // Show truncated output in terminal (keep minimal)
     if (trimmed) {
       const lines = trimmed.split('\n');
-      if (lines.length > 20) {
-        for (const line of lines.slice(0, 10)) {
-          console.log(chalk.dim('  ') + line);
+      if (lines.length > 10) {
+        for (const line of lines.slice(0, 3)) {
+          console.log(chalk.dim('    ') + chalk.dim(line));
         }
-        console.log(chalk.dim(`  ... ${lines.length - 15} more lines ...`));
-        for (const line of lines.slice(-5)) {
-          console.log(chalk.dim('  ') + line);
+        console.log(chalk.dim(`    ... ${lines.length - 5} more lines ...`));
+        for (const line of lines.slice(-2)) {
+          console.log(chalk.dim('    ') + chalk.dim(line));
         }
       } else {
         for (const line of lines) {
-          console.log(chalk.dim('  ') + line);
+          console.log(chalk.dim('    ') + chalk.dim(line));
         }
       }
     }
@@ -385,9 +351,9 @@ export function executeRunCommand(
     const combined = (stdout + '\n' + stderr).trim();
 
     if (combined) {
-      const lines = combined.split('\n').slice(-10);
+      const lines = combined.split('\n').slice(-5);
       for (const line of lines) {
-        console.log(chalk.red('  ') + line);
+        console.log(chalk.red('    ') + line);
       }
     }
 
@@ -473,7 +439,7 @@ export function executeDeleteFile(
     fs.unlinkSync(fullPath);
   }
 
-  console.log(chalk.red('  ✕ Deleted: ') + chalk.dim(args.filePath));
+  showActionLabel('delete', args.filePath);
   return `Successfully deleted ${args.filePath}`;
 }
 
@@ -492,12 +458,7 @@ export function executeRenameFile(
   fs.mkdirSync(path.dirname(destFull), { recursive: true });
   fs.renameSync(srcFull, destFull);
 
-  console.log(
-    chalk.blue('  → Renamed: ') +
-      chalk.dim(args.oldPath) +
-      chalk.dim(' → ') +
-      chalk.cyan(args.newPath),
-  );
+  showActionLabel('rename', `${args.oldPath} → ${args.newPath}`);
   return `Successfully renamed ${args.oldPath} → ${args.newPath}`;
 }
 
@@ -506,9 +467,7 @@ export function executeSearchFiles(
   args: { pattern: string; fileGlob?: string; maxResults?: number },
 ): string {
   const maxResults = args.maxResults ?? 20;
-  const results: string[] = [];
 
-  // Use grep if available for speed, otherwise fallback to manual search
   try {
     const globFlag = args.fileGlob ? `--include="${args.fileGlob}"` : '';
     const cmd = `grep -rn ${globFlag} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.expo --exclude-dir=_generated --exclude-dir=ios --exclude-dir=android -m ${maxResults} "${args.pattern.replace(/"/g, '\\"')}" . 2>/dev/null || true`;

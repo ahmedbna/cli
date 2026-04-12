@@ -7,8 +7,9 @@ import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { log } from '../utils/logger.js';
-import { isAuthenticated } from '../utils/store.js';
+import { ensureValidAuth } from '../utils/auth.js';
 import { checkCredits, deductCredits } from '../utils/credits.js';
+import { getAuthToken } from '../utils/store.js';
 import { runAgent } from '../agent/agent.js';
 
 interface GenerateOptions {
@@ -56,7 +57,6 @@ function copyTemplateDir(src: string, dest: string): void {
  * Looks for: <package-root>/templates/<stack>/
  */
 function resolveTemplateDir(stack: string): string {
-  // Walk up from dist/index.js or src/commands/build.ts to find the package root
   let dir = path.dirname(new URL(import.meta.url).pathname);
   for (let i = 0; i < 5; i++) {
     const candidate = path.join(dir, 'templates', stack);
@@ -64,7 +64,6 @@ function resolveTemplateDir(stack: string): string {
     dir = path.dirname(dir);
   }
 
-  // Fallback: try relative to cwd (development)
   const cwdCandidate = path.join(process.cwd(), 'templates', stack);
   if (fs.existsSync(cwdCandidate)) return cwdCandidate;
 
@@ -74,17 +73,10 @@ function resolveTemplateDir(stack: string): string {
   );
 }
 
-/**
- * Detect if the current machine is macOS
- */
 function isMacOS(): boolean {
   return os.platform() === 'darwin';
 }
 
-/**
- * Run an interactive command that requires user input (stdio: inherit).
- * Returns true if the command succeeded (exit code 0), false otherwise.
- */
 function runInteractive(command: string, cwd: string): boolean {
   try {
     const result = spawnSync(command, {
@@ -102,22 +94,18 @@ function runInteractive(command: string, cwd: string): boolean {
 export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.banner();
 
-  // ── 1. Check authentication ──────────────────────────────────────────────
-  const loggedIn = isAuthenticated();
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 1: Validate authentication FIRST (before ANY expensive operations)
+  // This calls the BNA server to verify the token is still valid.
+  // If expired, we fail fast HERE instead of after 5+ minutes of setup.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const authResult = await ensureValidAuth();
 
-  if (!loggedIn) {
-    log.warn(
-      'You are not logged in.\n' +
-        '  Run ' +
-        chalk.cyan('bna login') +
-        ' to authenticate with BNA.',
-    );
-    return;
-  }
-
-  // ── 2. Check credits ─────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 2: Check credits (also validates token server-side as a side effect)
+  // ═══════════════════════════════════════════════════════════════════════════
   log.info('Checking credits...');
-  const { credits, hasEnough, userId } = await checkCredits();
+  const { credits, hasEnough } = await checkCredits();
 
   if (!hasEnough) {
     log.error(
@@ -127,19 +115,14 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     return;
   }
 
-  if (!userId) {
-    log.error(
-      'Could not verify your identity. Your auth token may be expired.\n' +
-        `  Run ${chalk.cyan('bna login')} to re-authenticate.`,
-    );
-    return;
-  }
-
   if (credits >= 0) {
     log.credits(credits);
   }
 
-  // ── 3. Determine project directory ────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 3: Gather project info (interactive prompts — no network needed)
+  // ═══════════════════════════════════════════════════════════════════════════
+
   const cwd = process.cwd();
   const dirContents = fs.readdirSync(cwd);
   const isEmpty =
@@ -172,7 +155,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectRoot = path.resolve(cwd, projectName);
   }
 
-  // ── 4. Choose stack ───────────────────────────────────────────────────────
   let stack: 'expo' | 'expo-convex';
   if (options.stack === 'expo') {
     stack = 'expo';
@@ -200,7 +182,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     stack = stackAnswer.stack;
   }
 
-  // ── 5. Get the prompt ─────────────────────────────────────────────────────
   let prompt: string;
   if (options.prompt) {
     prompt = options.prompt;
@@ -217,7 +198,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     prompt = promptAnswer.prompt;
   }
 
-  // ── 6. Summary ────────────────────────────────────────────────────────────
   console.log();
   log.info(`Project: ${chalk.cyan(projectName)}`);
   log.info(`Stack:   ${chalk.cyan(stack)}`);
@@ -227,12 +207,14 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.info(`Path:    ${chalk.dim(projectRoot)}`);
   console.log();
 
-  // ── 7. Copy template ─────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 4: Scaffold project (now safe to do expensive operations)
+  // ═══════════════════════════════════════════════════════════════════════════
+
   log.info('Scaffolding project from template...');
   try {
     const templateDir = resolveTemplateDir(stack);
 
-    // Create project dir if needed
     if (!fs.existsSync(projectRoot)) {
       fs.mkdirSync(projectRoot, { recursive: true });
     }
@@ -244,7 +226,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     process.exit(1);
   }
 
-  // ── 8. Install dependencies ───────────────────────────────────────────────
   log.info('Installing dependencies...');
   try {
     execSync('npm install', {
@@ -253,7 +234,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       env: { ...process.env, FORCE_COLOR: '1' },
     });
     log.success('Dependencies installed.');
-  } catch (err: any) {
+  } catch {
     log.error('npm install failed. Trying with --legacy-peer-deps...');
     try {
       execSync('npm install --legacy-peer-deps', {
@@ -270,10 +251,11 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
   }
 
-  // ── 9. Initialize Convex (if expo-convex) ─────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 5: Initialize Convex (if expo-convex)
+  // ═══════════════════════════════════════════════════════════════════════════
+
   if (stack === 'expo-convex') {
-    // ── Step A: npx convex dev --once ───────────────────────────────────────
-    // Interactive — user picks team, project name, cloud/local, AI files
     console.log();
     log.divider();
     log.info(chalk.bold('Step 1/2 — Setting up Convex backend'));
@@ -311,8 +293,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       log.success('Convex backend initialized and deployed.');
     }
 
-    // ── Step B: npx @convex-dev/auth ────────────────────────────────────────
-    // Interactive — sets JWT keys, validates auth.ts, http.ts, etc.
     console.log();
     log.divider();
     log.info(chalk.bold('Step 2/2 — Setting up Convex Auth'));
@@ -334,8 +314,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       log.success('Convex Auth configured.');
     }
 
-    // ── Step C: Redeploy after auth setup ───────────────────────────────────
-    // Auth setup may have set env vars / modified files, so push once more
     console.log();
     log.info('Deploying backend with auth configuration...');
     const redeployOk = runInteractive('npx convex dev --once', projectRoot);
@@ -348,16 +326,44 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
   }
 
-  // ── 10. Run the AI agent ──────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 6: Re-validate auth before starting the agent
+  // npm install + convex setup can take 5+ minutes — token may have expired
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  log.info('Re-verifying authentication before AI agent...');
+  try {
+    const token = getAuthToken();
+
+    const resp = await fetch('https://ai.ahmedbna.com/api/cli-credits', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (resp.status === 401) {
+      log.error(
+        'Your authentication expired during setup.\n' +
+          `  Run ${chalk.cyan('bna login')} to re-authenticate, then run ${chalk.cyan('bna build')} again.\n` +
+          '  Your project scaffolding is preserved — no work was lost.',
+      );
+      process.exit(1);
+    }
+
+    log.success('Authentication verified.');
+  } catch {
+    log.warn('Could not re-verify auth — proceeding anyway.');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 7: Run the AI agent
+  // ═══════════════════════════════════════════════════════════════════════════
+
   console.log();
   log.divider();
   log.info(chalk.bold('Starting AI Agent...'));
   log.info(
     chalk.dim('The agent will customize your app based on the description.'),
   );
-  log.info(
-    chalk.dim('Every file it writes will be streamed to this terminal.'),
-  );
+  log.info(chalk.dim('Every file action will be displayed in this terminal.'));
   console.log();
 
   const chatInitialId = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -371,7 +377,10 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     },
   });
 
-  // ── 11. Post-agent: deploy AI changes ─────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 8: Post-agent deployment + dev server start
+  // ═══════════════════════════════════════════════════════════════════════════
+
   if (stack === 'expo-convex') {
     console.log();
     log.divider();
@@ -389,9 +398,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
   }
 
-  // ── 12. Start dev servers ─────────────────────────────────────────────────
   if (stack === 'expo-convex') {
-    // Start `npx convex dev` in the background (watches for changes)
     console.log();
     log.info('Starting Convex dev server (background)...');
     const convexProc = spawn('npx', ['convex', 'dev'], {
@@ -405,7 +412,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     log.success('Convex dev server running in background.');
   }
 
-  // Start Expo dev build
   console.log();
   const expoCommand = isMacOS() ? 'npx expo run:ios' : 'npx expo run:android';
   const platform = isMacOS() ? 'iOS' : 'Android';
@@ -427,7 +433,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
   });
 
-  // ── 13. Final instructions ────────────────────────────────────────────────
   console.log();
   log.divider();
   log.success(chalk.bold('Your app is ready!'));

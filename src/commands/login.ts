@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
 import open from 'open';
-import { store } from '../utils/store.js';
+import { store, setAuthData } from '../utils/store.js';
 import { log } from '../utils/logger.js';
 
 const API_BASE = 'https://ai.ahmedbna.com';
@@ -17,11 +17,24 @@ export async function loginCommand(): Promise<void> {
   log.banner();
 
   if (store.get('authToken')) {
-    log.success('You are already logged in.');
-    log.info(`Email:   ${chalk.cyan(store.get('email') ?? 'unknown')}`);
-    log.info(`User ID: ${chalk.dim(store.get('userId') ?? 'unknown')}`);
-    log.info('Run `bna logout` to sign out, or `bna build` to start building.');
-    return;
+    // Check if the 30-day session is still valid
+    const expiresAt = store.get('sessionExpiresAt');
+    if (expiresAt && Date.now() < expiresAt) {
+      const daysRemaining = Math.ceil(
+        (expiresAt - Date.now()) / (24 * 60 * 60 * 1000),
+      );
+      log.success('You are already logged in.');
+      log.info(`Email:   ${chalk.cyan(store.get('email') ?? 'unknown')}`);
+      log.info(`User ID: ${chalk.dim(store.get('userId') ?? 'unknown')}`);
+      log.info(`Session: ${chalk.green(`${daysRemaining} days remaining`)}`);
+      log.info(
+        'Run `bna logout` to sign out, or `bna build` to start building.',
+      );
+      return;
+    } else {
+      // Session expired — clear and re-login
+      log.info('Your previous session has expired. Starting fresh login...');
+    }
   }
 
   const sessionId = crypto.randomUUID();
@@ -50,9 +63,7 @@ export async function loginCommand(): Promise<void> {
       const resp = await fetch(pollUrl);
 
       if (!resp.ok) {
-        // Non-200 response — log it but keep polling
         if (resp.status !== 200) {
-          const text = await resp.text().catch(() => '');
           spinner.text = `Waiting for authentication... (server: ${resp.status})`;
         }
         continue;
@@ -61,8 +72,7 @@ export async function loginCommand(): Promise<void> {
       let data: any;
       try {
         data = await resp.json();
-      } catch (parseErr) {
-        // JSON parse failure — keep polling
+      } catch {
         spinner.text = 'Waiting for authentication... (bad response)';
         continue;
       }
@@ -75,15 +85,26 @@ export async function loginCommand(): Promise<void> {
       // We have a token!
       spinner.succeed('Authenticated!');
 
-      // Store the auth token (Convex JWT)
-      store.set('authToken', data.token);
+      // Use setAuthData to store everything with 30-day session expiry
+      const authData: Parameters<typeof setAuthData>[0] = {
+        token: data.token,
+      };
 
-      // Store identity fields from the payload
-      if (data.userId) store.set('userId', data.userId);
-      if (data.email) store.set('email', data.email);
+      if (data.userId) authData.userId = data.userId;
+      if (data.email) authData.email = data.email;
       if (data.convexAccessToken)
+        authData.convexAccessToken = data.convexAccessToken;
+      if (data.teamSlug) authData.teamSlug = data.teamSlug;
+
+      setAuthData(authData);
+
+      // Store additional fields directly
+      if (data.convexAccessToken) {
         store.set('convexAccessToken', data.convexAccessToken);
-      if (data.teamSlug) store.set('convexTeamSlug', data.teamSlug);
+      }
+      if (data.teamSlug) {
+        store.set('convexTeamSlug', data.teamSlug);
+      }
 
       // If userId wasn't in the payload, try decoding the JWT
       if (!data.userId && data.token) {
@@ -109,9 +130,10 @@ export async function loginCommand(): Promise<void> {
       if (store.get('userId')) {
         log.info(`User ID: ${chalk.dim(store.get('userId')!)}`);
       }
+      log.info(`Session valid for ${chalk.green('30 days')}.`);
       log.info('Run `bna build` or just `bna` to start building!');
       return;
-    } catch (err) {
+    } catch {
       // Network error — keep polling silently
       spinner.text = 'Waiting for authentication... (retrying)';
     }

@@ -102,6 +102,55 @@ interface ToolUseBlock {
 
 type StreamBlock = TextBlock | ToolUseBlock;
 
+// ─── Shimmer spinner for "thinking" state ────────────────────────────────────
+
+const SHIMMER_CHARS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SHIMMER_COLORS = [
+  chalk.hex('#6366f1'),
+  chalk.hex('#818cf8'),
+  chalk.hex('#a5b4fc'),
+  chalk.hex('#c7d2fe'),
+  chalk.hex('#a5b4fc'),
+  chalk.hex('#818cf8'),
+];
+
+function createShimmerSpinner(text: string) {
+  let frame = 0;
+  let colorIdx = 0;
+
+  const spinner = ora({
+    text: '',
+    spinner: {
+      interval: 80,
+      frames: SHIMMER_CHARS,
+    },
+    color: 'magenta',
+  });
+
+  // Override the render to add shimmer color cycling
+  const interval = setInterval(() => {
+    const color = SHIMMER_COLORS[colorIdx % SHIMMER_COLORS.length];
+    spinner.text = color(text);
+    colorIdx++;
+  }, 200);
+
+  spinner.start();
+
+  return {
+    stop: () => {
+      clearInterval(interval);
+      spinner.stop();
+    },
+    succeed: (msg?: string) => {
+      clearInterval(interval);
+      spinner.succeed(msg);
+    },
+    update: (newText: string) => {
+      text = newText;
+    },
+  };
+}
+
 // ─── Main agent loop ─────────────────────────────────────────────────────────
 
 export async function runAgent(options: AgentOptions): Promise<void> {
@@ -139,7 +188,8 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         `3. Add tables to the Convex schema (keep ...authTables and users table)\n` +
         `4. Write Convex query/mutation functions\n` +
         `5. Build the screens\n` +
-        `6. Only run \`npx expo install <pkg>\` if you need NEW packages not in the template`,
+        `6. Only run \`npx expo install <pkg>\` if you need NEW packages not in the template\n` +
+        `7. IMPORTANT: As your FINAL step, write an ARCHITECTURE.md file at the project root that documents the complete project structure, what each file does, and where it is used. This is critical for future modifications.`,
     },
   ];
 
@@ -230,12 +280,8 @@ export async function runAgent(options: AgentOptions): Promise<void> {
           input: block.input,
         });
 
-        // Execute the tool
+        // Execute the tool — the tool executor now handles its own display
         const toolName = block.name as ToolName;
-
-        // Display tool usage info
-        const toolLabel = getToolLabel(toolName, block.input);
-        log.info(chalk.dim('Tool: ') + chalk.cyan(toolName) + toolLabel);
 
         let result: string;
         try {
@@ -287,42 +333,20 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
+  // ── Deduct credits ────────────────────────────────────────────────────────
   if (options.onCreditsUsed) {
-    await options.onCreditsUsed(
-      accumulated.inputTokens,
-      accumulated.outputTokens,
-    );
+    try {
+      await options.onCreditsUsed(
+        accumulated.inputTokens,
+        accumulated.outputTokens,
+      );
+    } catch (err: any) {
+      log.warn(`Credit deduction failed: ${err.message ?? 'unknown error'}`);
+    }
   }
 
   log.success(chalk.bold('Generation complete!'));
   console.log();
-}
-
-// ─── Tool label helper ───────────────────────────────────────────────────────
-
-function getToolLabel(toolName: ToolName, input: Record<string, any>): string {
-  switch (toolName) {
-    case 'createFile':
-      return chalk.dim(` → ${input.filePath}`);
-    case 'editFile':
-      return chalk.dim(` → ${input.filePath}`);
-    case 'runCommand':
-      return chalk.dim(` → ${input.command}`);
-    case 'viewFile':
-      return chalk.dim(` → ${input.filePath}`);
-    case 'listDirectory':
-      return chalk.dim(` → ${input.dirPath ?? '.'}`);
-    case 'deleteFile':
-      return chalk.dim(` → ${input.filePath}`);
-    case 'renameFile':
-      return chalk.dim(` → ${input.oldPath} → ${input.newPath}`);
-    case 'searchFiles':
-      return chalk.dim(` → "${input.pattern}"`);
-    case 'readMultipleFiles':
-      return chalk.dim(` → ${input.filePaths?.length ?? 0} files`);
-    default:
-      return '';
-  }
 }
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -365,10 +389,10 @@ async function readStream(
 
   let textStarted = false;
 
-  const spinner = ora({
-    text: chalk.dim(`Thinking... (round ${round + 1}/${MAX_ROUNDS})`),
-    color: 'yellow',
-  }).start();
+  // Use shimmer spinner instead of plain ora
+  const spinner = createShimmerSpinner(
+    `Thinking... (round ${round + 1}/${MAX_ROUNDS})`,
+  );
 
   const body = response.body;
   if (!body) {

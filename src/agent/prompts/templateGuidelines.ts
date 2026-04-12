@@ -46,7 +46,7 @@ export const templateGuidelines = () => stripIndents`
   - Use \`expo-haptics\` for touch feedback in interactive components
 
   ## Critical Rules
-  1. Plan first — inspect template → theme → ui components → schema → functions → screens.
+  1. Plan first — inspect template → theme → ui components → schema → functions → screens → ARCHITECTURE.md.
   2. Colors — ALWAYS use theme colors via \`useColor\` hook. NEVER hardcode hex/rgb.
   3. Locked files — NEVER modify: \`convex/auth.config.ts\`.
   4. Native rebuilds — warn user when a native rebuild is required after installing a new native module.
@@ -54,6 +54,7 @@ export const templateGuidelines = () => stripIndents`
   6. Animations — ALWAYS use \`react-native-reanimated\` for all animations. NEVER use RN's built-in \`Animated\` API.
   7. Keyboard — ALWAYS use \`react-native-keyboard-controller\` around inputs. NEVER use \`KeyboardAvoidingView\`.
   8. DO NOT run convex dev or expo — they are started automatically after you finish.
+  9. ARCHITECTURE.md — ALWAYS write this as the FINAL step of every generation.
 
   ## app.json — Update for every new app
   When starting a new app, always update these fields in \`app.json\`:
@@ -68,6 +69,7 @@ export const templateGuidelines = () => stripIndents`
   ## Directory Structure
   \`\`\`
   .
+  ├── ARCHITECTURE.md            # MANDATORY — project map for future modifications
   ├── app/
   │   ├── _layout.tsx              # Root layout (already exists)
   │   ├── index.tsx                # Redirects to (home) (already exists)
@@ -187,5 +189,6 @@ export const templateGuidelines = () => stripIndents`
   - Running \`npm install\` — base deps are pre-installed
   - Suggesting Expo Go for native module features
   - Shipping with default template name/slug/scheme/bundle identifiers
+  - Skipping ARCHITECTURE.md — it MUST be written as the final step
 </solution_constraints>
 `;
