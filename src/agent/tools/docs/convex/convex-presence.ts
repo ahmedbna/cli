@@ -1,5 +1,5 @@
-export const presenceComponentReadmePrompt = `
-# Convex PresenceComponent
+export const convexPresenceDocs = `
+# Convex Presence Component
 
 Manages live-updating user presence in a "room" without polling — uses scheduled functions so clients only update when users join/leave.
 
@@ -10,7 +10,7 @@ npx expo install @convex-dev/presence expo-crypto
 
 ## Setup
 
-\`convex/convex.config.ts\`
+### convex/convex.config.ts
 \`\`\`ts
 import { defineApp } from "convex/server";
 import presence from "@convex-dev/presence/convex.config";
@@ -19,7 +19,7 @@ app.use(presence);
 export default app;
 \`\`\`
 
-\`convex/presence.ts\`
+### convex/presence.ts
 \`\`\`ts
 import { mutation, query } from "./_generated/server";
 import { components } from "./_generated/api";
@@ -35,7 +35,12 @@ export const getUserId = query({
 });
 
 export const heartbeat = mutation({
-  args: { roomId: v.string(), userId: v.string(), sessionId: v.string(), interval: v.number() },
+  args: {
+    roomId: v.string(),
+    userId: v.string(),
+    sessionId: v.string(),
+    interval: v.number(),
+  },
   handler: async (ctx, args) => {
     const authUserId = await getAuthUserId(ctx);
     if (!authUserId) throw new Error("Not authenticated");
@@ -48,7 +53,7 @@ export const list = query({
   handler: async (ctx, { roomToken }) => {
     const list = await presence.list(ctx, roomToken);
     return Promise.all(list.map(async (entry) => {
-      const user = await ctx.db.get(entry.userId as Id<"users">);
+      const user = await ctx.db.get(entry.userId as any);
       return user ? { ...entry, name: user.name, image: user.image } : entry;
     }));
   },
@@ -60,14 +65,10 @@ export const disconnect = mutation({
 });
 \`\`\`
 
-## Usage in component
-
+## Usage in React Native
 \`\`\`tsx
 import { usePresence } from '@convex-dev/presence/react-native';
 import { api } from '@/convex/_generated/api';
-
-// Hook signature:
-// usePresence(presence: PresenceAPI, roomId: string, userId: string, interval?: number, convexUrl?: string): PresenceState[] | undefined
 
 function PresenceIndicator({ userId }: { userId: string }) {
   const presenceState = usePresence(api.presence, 'my-room', userId);
@@ -75,7 +76,7 @@ function PresenceIndicator({ userId }: { userId: string }) {
 }
 \`\`\`
 
-PresenceState type:
+## PresenceState type
 \`\`\`ts
 interface PresenceState {
   userId: string;

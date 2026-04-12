@@ -1,11 +1,13 @@
 // src/agent/tools.ts
 // Tool definitions and executors for the CLI agent
-// Shows animated action labels instead of streaming full file content
+// Includes filesystem tools + doc lookup tools + environment variable tools
 
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import chalk, { type ChalkInstance } from 'chalk';
+import { convexDocs, CONVEX_DOC_TOPICS } from './tools/docs/convex/index.js';
+import { expoDocs, EXPO_DOC_TOPICS } from './tools/docs/expo/index.js';
 
 export type ToolName =
   | 'createFile'
@@ -16,7 +18,10 @@ export type ToolName =
   | 'deleteFile'
   | 'renameFile'
   | 'searchFiles'
-  | 'readMultipleFiles';
+  | 'readMultipleFiles'
+  | 'lookupConvexDocs'
+  | 'lookupExpoDocs'
+  | 'addEnvironmentVariables';
 
 // ─── Tool Definitions (sent to Anthropic API) ────────────────────────────────
 
@@ -68,14 +73,14 @@ export const toolDefinitions = [
   {
     name: 'runCommand' as const,
     description:
-      'Execute a shell command in the project directory. Use for: npm install, npx convex dev --once, npx expo install <pkg>, etc. Returns stdout + stderr. Long-running commands time out at 120s.',
+      'Execute a shell command in the project directory. Use ONLY for: `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr. Long-running commands time out at 120s.',
     input_schema: {
       type: 'object' as const,
       properties: {
         command: {
           type: 'string',
           description:
-            'Shell command to execute (e.g. "npm install expo-camera")',
+            'Shell command to execute (e.g. "npx expo install expo-camera")',
         },
         timeout: {
           type: 'number',
@@ -201,6 +206,67 @@ export const toolDefinitions = [
       required: ['filePaths'],
     },
   },
+
+  // ─── Documentation Lookup Tools ─────────────────────────────────────────
+
+  {
+    name: 'lookupConvexDocs' as const,
+    description:
+      'Look up Convex documentation for advanced features before implementing. Call this BEFORE writing code for: file storage, full-text search, pagination, HTTP actions, scheduling/crons, Node.js actions, TypeScript types, function calling, advanced queries, advanced mutations, or presence.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        topics: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: CONVEX_DOC_TOPICS,
+          },
+          description: `Advanced Convex topics to look up. Valid values: ${CONVEX_DOC_TOPICS.join(', ')}`,
+        },
+      },
+      required: ['topics'],
+    },
+  },
+  {
+    name: 'lookupExpoDocs' as const,
+    description:
+      'Look up Expo and React Native documentation for features before implementing. Call this BEFORE writing code for: dev builds, EAS builds, routing, image/media handling, animations, haptics, or gestures.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        topics: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: EXPO_DOC_TOPICS,
+          },
+          description: `Expo/React Native topics to look up. Valid values: ${EXPO_DOC_TOPICS.join(', ')}`,
+        },
+      },
+      required: ['topics'],
+    },
+  },
+
+  // ─── Environment Variables Tool ──────────────────────────────────────────
+
+  {
+    name: 'addEnvironmentVariables' as const,
+    description:
+      'Instruct the user to add environment variables to their Convex deployment. Use this when the app requires API keys or secrets (e.g. OPENAI_API_KEY, STRIPE_SECRET_KEY). The tool returns instructions for the user to set these variables via the Convex dashboard or CLI.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        envVarNames: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'List of environment variable names to add (e.g. ["OPENAI_API_KEY", "STRIPE_SECRET_KEY"])',
+        },
+      },
+      required: ['envVarNames'],
+    },
+  },
 ];
 
 // ─── Shimmer animation for action labels ─────────────────────────────────────
@@ -233,7 +299,7 @@ function shimmerText(text: string, color: ChalkInstance): void {
 }
 
 function showActionLabel(
-  action: 'create' | 'update' | 'delete' | 'rename' | 'run',
+  action: 'create' | 'update' | 'delete' | 'rename' | 'run' | 'docs' | 'env',
   filePath: string,
   lines?: number,
 ): void {
@@ -243,6 +309,8 @@ function showActionLabel(
     delete: { verb: 'Removing', color: chalk.red },
     rename: { verb: 'Moving', color: chalk.blue },
     run: { verb: 'Running', color: chalk.magenta },
+    docs: { verb: 'Looking up', color: chalk.cyan },
+    env: { verb: 'Environment', color: chalk.hex('#f59e0b') },
   };
 
   const { verb, color } = labels[action];
@@ -252,7 +320,7 @@ function showActionLabel(
   shimmerText(label, color);
 }
 
-// ─── Tool Executors ─────────────────────────────────────────────────────────
+// ─── Filesystem Tool Executors ───────────────────────────────────────────────
 
 export function executeCreateFile(
   projectRoot: string,
@@ -268,7 +336,6 @@ export function executeCreateFile(
 
   const lines = args.content.split('\n').length;
 
-  // Show animated action label instead of streaming file content
   showActionLabel(existed ? 'update' : 'create', args.filePath, lines);
 
   return `Successfully ${existed ? 'updated' : 'created'} ${args.filePath} (${lines} lines)`;
@@ -298,7 +365,6 @@ export function executeEditFile(
   const newContent = content.replace(args.oldText, args.newText);
   fs.writeFileSync(fullPath, newContent, 'utf-8');
 
-  // Show animated action label
   const oldLines = args.oldText.split('\n').length;
   const newLines = args.newText.split('\n').length;
   showActionLabel('update', args.filePath);
@@ -324,7 +390,6 @@ export function executeRunCommand(
     });
     const trimmed = output.trim();
 
-    // Show truncated output in terminal (keep minimal)
     if (trimmed) {
       const lines = trimmed.split('\n');
       if (lines.length > 10) {
@@ -454,7 +519,6 @@ export function executeRenameFile(
     return `Error: Source file not found: ${args.oldPath}`;
   }
 
-  // Ensure destination directory exists
   fs.mkdirSync(path.dirname(destFull), { recursive: true });
   fs.renameSync(srcFull, destFull);
 
@@ -515,6 +579,74 @@ export function executeReadMultipleFiles(
   return results.join('\n\n');
 }
 
+// ─── Documentation Lookup Executors ──────────────────────────────────────────
+
+export function executeLookupConvexDocs(
+  _projectRoot: string,
+  args: { topics: string[] },
+): string {
+  const results: string[] = [];
+
+  for (const topic of args.topics) {
+    const doc = convexDocs[topic];
+    if (doc) {
+      results.push(doc);
+    } else {
+      results.push(
+        `Unknown Convex topic: "${topic}". Valid topics: ${CONVEX_DOC_TOPICS.join(', ')}`,
+      );
+    }
+  }
+
+  showActionLabel('docs', `Convex: ${args.topics.join(', ')}`);
+  return results.join('\n\n---\n\n');
+}
+
+export function executeLookupExpoDocs(
+  _projectRoot: string,
+  args: { topics: string[] },
+): string {
+  const results: string[] = [];
+
+  for (const topic of args.topics) {
+    const doc = expoDocs[topic];
+    if (doc) {
+      results.push(doc);
+    } else {
+      results.push(
+        `Unknown Expo topic: "${topic}". Valid topics: ${EXPO_DOC_TOPICS.join(', ')}`,
+      );
+    }
+  }
+
+  showActionLabel('docs', `Expo: ${args.topics.join(', ')}`);
+  return results.join('\n\n---\n\n');
+}
+
+// ─── Environment Variables Executor ──────────────────────────────────────────
+
+export function executeAddEnvironmentVariables(
+  _projectRoot: string,
+  args: { envVarNames: string[] },
+): string {
+  const names = args.envVarNames;
+
+  showActionLabel('env', names.join(', '));
+
+  const instructions = names
+    .map(
+      (name) =>
+        `  • ${name}\n    Set via dashboard: Convex Dashboard → Settings → Environment Variables\n    Or via CLI: npx convex env set ${name} <value>`,
+    )
+    .join('\n\n');
+
+  return (
+    `The following environment variables need to be set on your Convex deployment:\n\n` +
+    instructions +
+    `\n\nPlease set these before using features that depend on them.`
+  );
+}
+
 // ─── Tool Router ─────────────────────────────────────────────────────────────
 
 export function executeTool(
@@ -541,6 +673,12 @@ export function executeTool(
       return executeSearchFiles(projectRoot, toolInput as any);
     case 'readMultipleFiles':
       return executeReadMultipleFiles(projectRoot, toolInput as any);
+    case 'lookupConvexDocs':
+      return executeLookupConvexDocs(projectRoot, toolInput as any);
+    case 'lookupExpoDocs':
+      return executeLookupExpoDocs(projectRoot, toolInput as any);
+    case 'addEnvironmentVariables':
+      return executeAddEnvironmentVariables(projectRoot, toolInput as any);
     default:
       return `Error: Unknown tool ${toolName}`;
   }

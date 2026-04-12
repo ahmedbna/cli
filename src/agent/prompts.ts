@@ -44,6 +44,9 @@ You SHOULD:
 - Use \`searchFiles\` to find specific patterns across the codebase
 - Use \`deleteFile\` to remove files that aren't needed
 - Use \`renameFile\` to move/rename files
+- Use \`lookupConvexDocs\` BEFORE implementing advanced Convex features (file storage, search, pagination, HTTP actions, scheduling, crons, Node.js actions, types, presence)
+- Use \`lookupExpoDocs\` BEFORE implementing Expo features (routing, animations, haptics, gestures, image/media, dev builds, EAS builds)
+- Use \`addEnvironmentVariables\` when the app needs API keys or secrets set on the Convex deployment
 
 ## Available Tools
 
@@ -76,15 +79,26 @@ Rename or move a file.
 ### searchFiles
 Search for a text pattern across project files. Returns matching file paths and line numbers.
 
+### lookupConvexDocs
+Look up Convex documentation for advanced features BEFORE implementing them. Topics: file-storage, full-text-search, pagination, http-actions, scheduling-cron, scheduling-runtime, actions-nodejs, typescript-types, function-calling, query-advanced, mutation-advanced, presence.
+
+### lookupExpoDocs
+Look up Expo/React Native documentation for features BEFORE implementing them. Topics: dev-build, eas-build, routing, image-media, animations, haptics-gestures.
+
+### addEnvironmentVariables
+When the app needs external API keys or secrets, use this tool to instruct the user on which environment variables to set on their Convex deployment.
+
 ## Workflow
 
 1. Start by reading the existing template files to understand the current state
-2. Design the theme (colors.ts) unique to this app
-3. Build/update UI components
-4. Add tables to Convex schema (keep ...authTables and users)
-5. Write Convex functions
-6. Build/update screens
-7. Only install new packages if absolutely needed
+2. **Look up docs** for any advanced features you plan to implement (use \`lookupConvexDocs\` and \`lookupExpoDocs\`)
+3. Design the theme (colors.ts) unique to this app
+4. Build/update UI components
+5. Add tables to Convex schema (keep ...authTables and users)
+6. Write Convex functions
+7. Build/update screens
+8. Only install new packages if absolutely needed
+9. If the app needs external API keys, use \`addEnvironmentVariables\`
 `;
 
 export function generalSystemPrompt(options: SystemPromptOptions) {
