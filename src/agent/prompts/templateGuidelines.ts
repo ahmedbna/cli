@@ -33,8 +33,8 @@ export const templateGuidelines = () => stripIndents`
   ### File naming
   All files in \`components/ui/\` must use lowercase with hyphens: \`button.tsx\`, \`text.tsx\`, \`input.tsx\`, \`card.tsx\`, etc.
 
-  ### Required components — always create these for every app
-  - \`components/ui/button.tsx\` — already exists in template, update to match new theme
+  ### Required components — always create these for every app 
+  - \`components/ui/button.tsx\` — already exists in template, update to match new theme - ensure buttons have a minimum height to prevent text or icons from being clipped
   - \`components/ui/text.tsx\` — create a typography wrapper with named variants (h1, h2, body, caption, etc.)
   - \`components/ui/input.tsx\` — create a styled text input component
 
