@@ -1,8 +1,11 @@
 export const expoImageMediaDocs = `
 # Expo Image & Media
 
-## expo-image (already in template)
+## expo-image
 Performant image component — use instead of React Native's Image.
+\`\`\`bash
+npx expo install expo-image
+\`\`\`
 \`\`\`tsx
 import { Image } from "expo-image";
 
