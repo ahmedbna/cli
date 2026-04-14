@@ -1,8 +1,8 @@
-export const convexTypesDocs = `
 # Convex TypeScript Types
 
 ## Document and ID types
-\`\`\`ts
+
+```ts
 import { Doc, Id } from "./_generated/dataModel";
 
 type User = Doc<"users">;
@@ -12,10 +12,11 @@ export const get = query({
   args: { id: v.id("users") },
   handler: async (ctx, { id }): Promise<User | null> => ctx.db.get(id),
 });
-\`\`\`
+```
 
 ## Using types in React Native
-\`\`\`tsx
+
+```tsx
 import { Doc, Id } from "@/convex/_generated/dataModel";
 
 interface Props {
@@ -30,19 +31,21 @@ function TodoItem({ todo, onToggle }: Props) {
     </Pressable>
   );
 }
-\`\`\`
+```
 
 ## Function return types
-\`\`\`ts
+
+```ts
 import { FunctionReturnType } from "convex/server";
 import { api } from "./_generated/api";
 
 // Infer the return type of a query
 type TodoList = FunctionReturnType<typeof api.todos.list>;
-\`\`\`
+```
 
 ## Validator to TypeScript type
-\`\`\`ts
+
+```ts
 import { Infer } from "convex/values";
 
 const todoValidator = v.object({
@@ -53,5 +56,4 @@ const todoValidator = v.object({
 
 type Todo = Infer<typeof todoValidator>;
 // { text: string; completed: boolean; priority: "low" | "medium" | "high" }
-\`\`\`
-`;
+```

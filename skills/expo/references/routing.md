@@ -1,25 +1,28 @@
-export const expoRoutingDocs = `
 # Expo Router — File-Based Routing
 
 ## Directory = Route Group
-Files inside \`app/\` map directly to routes:
-- \`app/index.tsx\` → \`/\`
-- \`app/(home)/index.tsx\` → \`/\` (within the home group)
-- \`app/(home)/settings.tsx\` → \`/settings\`
-- \`app/profile/[id].tsx\` → \`/profile/:id\` (dynamic route)
+
+Files inside `app/` map directly to routes:
+- `app/index.tsx` → `/`
+- `app/(home)/index.tsx` → `/` (within the home group)
+- `app/(home)/settings.tsx` → `/settings`
+- `app/profile/[id].tsx` → `/profile/:id` (dynamic route)
 
 ## Layouts
-\`_layout.tsx\` files wrap child routes:
-\`\`\`tsx
+
+`_layout.tsx` files wrap child routes:
+
+```tsx
 // app/_layout.tsx — Root layout
 import { Stack } from "expo-router";
 export default function RootLayout() {
   return <Stack screenOptions={{ headerShown: false }} />;
 }
-\`\`\`
+```
 
 ## Navigation
-\`\`\`tsx
+
+```tsx
 import { router } from "expo-router";
 
 // Navigate
@@ -30,10 +33,11 @@ router.back();
 // With Link component
 import { Link } from "expo-router";
 <Link href="/settings">Go to Settings</Link>
-\`\`\`
+```
 
 ## Dynamic routes
-\`\`\`tsx
+
+```tsx
 // app/profile/[id].tsx
 import { useLocalSearchParams } from "expo-router";
 
@@ -41,10 +45,11 @@ export default function Profile() {
   const { id } = useLocalSearchParams<{ id: string }>();
   return <AppText>Profile {id}</AppText>;
 }
-\`\`\`
+```
 
 ## Tab navigation (NativeTabs)
-\`\`\`tsx
+
+```tsx
 // app/(home)/_layout.tsx
 import { NativeTabs, Icon, Label, VectorIcon } from 'expo-router/unstable-native-tabs';
 import Feather from '@expo/vector-icons/Feather';
@@ -62,22 +67,24 @@ export default function HomeLayout() {
     </NativeTabs>
   );
 }
-\`\`\`
+```
 
 ## Protected routes
-Use \`(home)\` group with auth check in the root layout:
-\`\`\`tsx
+
+Use `(home)` group with auth check in the root layout:
+
+```tsx
 // app/_layout.tsx
 const user = useQuery(api.auth.loggedInUser);
 if (user === undefined) return <Spinner />;
 if (!user) return <Authentication />;
 return <Stack />;
-\`\`\`
+```
 
 ## Rules
+
 - Max 5 tabs in bottom tab bar
-- Route group names in parentheses: \`(home)\`, \`(auth)\`
-- Only use \`(home)\` as the protected group name in BNA templates
-- Dynamic segments use brackets: \`[id].tsx\`, \`[...slug].tsx\`
-- \`+not-found.tsx\` handles 404s
-`;
+- Route group names in parentheses: `(home)`, `(auth)`
+- Only use `(home)` as the protected group name in BNA templates
+- Dynamic segments use brackets: `[id].tsx`, `[...slug].tsx`
+- `+not-found.tsx` handles 404s

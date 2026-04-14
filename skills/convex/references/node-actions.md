@@ -1,9 +1,8 @@
-export const convexNodeActionsDocs = `
 # Convex Node.js Actions
 
 Actions that need Node.js built-ins (fetch, crypto, fs, etc.) or npm packages.
 
-\`\`\`ts
+```ts
 "use node"; // MUST be the first line of the file
 
 import { action } from "./_generated/server";
@@ -21,7 +20,7 @@ export const generate = action({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: \`Bearer \${process.env.OPENAI_API_KEY}\`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
         model: "gpt-4",
@@ -37,13 +36,13 @@ export const generate = action({
     return text;
   },
 });
-\`\`\`
+```
 
 ## Rules
-- \`"use node";\` MUST be the first line — no imports before it
-- No \`ctx.db\` access — use \`ctx.runQuery\`, \`ctx.runMutation\`, \`ctx.runAction\`
-- Env vars: \`process.env.MY_KEY\` — set via Convex dashboard or \`npx convex env set\`
+
+- `"use node";` MUST be the first line — no imports before it
+- No `ctx.db` access — use `ctx.runQuery`, `ctx.runMutation`, `ctx.runAction`
+- Env vars: `process.env.MY_KEY` — set via Convex dashboard or `npx convex env set`
 - Actions have a 10-minute timeout (vs 1s for queries/mutations)
-- Use \`internal\` references for functions called from within actions
+- Use `internal` references for functions called from within actions
 - Actions are NOT automatically retried on failure
-`;

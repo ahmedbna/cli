@@ -1,8 +1,8 @@
-export const convexPaginationDocs = `
 # Convex Pagination
 
 ## Backend — paginated query
-\`\`\`ts
+
+```ts
 import { paginationOptsValidator } from "convex/server";
 
 export const list = query({
@@ -10,10 +10,11 @@ export const list = query({
   handler: async (ctx, { paginationOpts }) =>
     ctx.db.query("messages").order("desc").paginate(paginationOpts),
 });
-\`\`\`
+```
 
 ## Frontend — usePaginatedQuery
-\`\`\`tsx
+
+```tsx
 import { usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
@@ -38,12 +39,12 @@ function MessageList() {
     />
   );
 }
-\`\`\`
+```
 
 ## Rules
-- \`.paginate()\` replaces \`.collect()\` or \`.take()\` — don't chain them
-- \`status\` is one of: \`"LoadingFirstPage"\`, \`"CanLoadMore"\`, \`"LoadingMore"\`, \`"Exhausted"\`
-- You can use \`.withIndex()\` and \`.order()\` before \`.paginate()\`
-- The \`paginationOpts\` validator handles cursor management automatically
-- \`initialNumItems\` sets how many items to load on first render
-`;
+
+- `.paginate()` replaces `.collect()` or `.take()` — don't chain them
+- `status` is one of: `"LoadingFirstPage"`, `"CanLoadMore"`, `"LoadingMore"`, `"Exhausted"`
+- You can use `.withIndex()` and `.order()` before `.paginate()`
+- The `paginationOpts` validator handles cursor management automatically
+- `initialNumItems` sets how many items to load on first render

@@ -9,18 +9,19 @@ export function outputInstructions() {
 
   Example:
   > User: "Create a fitness tracker app"
-  > Assistant: "I'll: 1) Design a dark navy/green theme in colors.ts 2) Build button, app-text, input, card UI components 3) Add workouts table to schema 4) Create CRUD mutations 5) Build Home + Log screens 6) Write ARCHITECTURE.md. Starting now."
+  > Assistant: "I'll: 1) Design light and dark theme in colors.ts 2) Build button, app-text, input, card UI components 3) Add workouts table to schema 4) Create CRUD mutations 5) Build Home + Log screens 6) Write ARCHITECTURE.md. Starting now."
   > [writes theme] [writes ui components] [writes schema] [writes functions] [writes screens] [writes ARCHITECTURE.md]
 
   ## Planning Order — ALWAYS follow this sequence
   1. **Inspect** — read existing template files (theme, schema, screens) to understand current state
-  2. **Theme** — write \`theme/colors.ts\` with a unique palette and \`RADIUS\`/\`SPACING\` tokens
-  3. **UI components** — create/update reusable components in \`components/ui/\` styled with that theme
-  4. **Schema** — design the Convex data model (keep ...authTables and users table)
-  5. **Functions** — write queries and mutations
-  6. **Screens** — build screens using the UI components
-  7. **Cleanup** — only install new packages if needed, do NOT run convex dev or expo
-  8. **ARCHITECTURE.md** — ALWAYS write this as the FINAL step (see below)
+  2. **Lookup docs** — use \`lookupDocs\` for any advanced Convex or Expo features you plan to use
+  3. **Theme** — write \`theme/colors.ts\` with a unique palette and \`RADIUS\`/\`SPACING\` tokens
+  4. **UI components** — create/update reusable components in \`components/ui/\` styled with that theme
+  5. **Schema** — design the Convex data model (keep ...authTables and users table)
+  6. **Functions** — write queries and mutations
+  7. **Screens** — build screens using the UI components
+  8. **Cleanup** — only install new packages if needed, do NOT run convex dev or expo
+  9. **ARCHITECTURE.md** — ALWAYS write this as the FINAL step (see below)
 
   ## ARCHITECTURE.md — MANDATORY FINAL STEP
   After completing ALL code changes, you MUST write an \`ARCHITECTURE.md\` file at the project root.

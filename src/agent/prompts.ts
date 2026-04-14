@@ -44,9 +44,36 @@ You SHOULD:
 - Use \`searchFiles\` to find specific patterns across the codebase
 - Use \`deleteFile\` to remove files that aren't needed
 - Use \`renameFile\` to move/rename files
-- Use \`lookupConvexDocs\` BEFORE implementing advanced Convex features (file storage, search, pagination, HTTP actions, scheduling, crons, Node.js actions, types, presence)
-- Use \`lookupExpoDocs\` BEFORE implementing Expo features (routing, animations, haptics, gestures, image/media, dev builds, EAS builds)
+- Use \`lookupDocs\` BEFORE implementing advanced features (see below)
 - Use \`addEnvironmentVariables\` when the app needs API keys or secrets set on the Convex deployment
+
+## Documentation Lookup — lookupDocs
+
+Use the \`lookupDocs\` tool to read reference documentation BEFORE implementing advanced features.
+This tool reads from bundled skill files — always call it before writing code for unfamiliar features.
+
+### Convex topics (skill: "convex")
+Call \`lookupDocs({ skill: "convex", topics: [...] })\` before implementing:
+- \`file-storage\` — upload/download files, store images
+- \`full-text-search\` — search indexes, text search queries
+- \`pagination\` — paginated queries, infinite scroll
+- \`http-actions\` — webhooks, REST endpoints
+- \`scheduling\` — cron jobs and runtime-scheduled functions
+- \`node-actions\` — external API calls with \`"use node"\`
+- \`types\` — Doc/Id types, Infer, FunctionReturnType
+- \`function-calling\` — cross-context calls (api vs internal)
+- \`advanced-queries\` — compound indexes, ordering, conditional queries
+- \`advanced-mutations\` — batch insert, upsert, cascade delete
+- \`presence\` — real-time user presence indicators
+
+### Expo topics (skill: "expo")
+Call \`lookupDocs({ skill: "expo", topics: [...] })\` before implementing:
+- \`dev-build\` — understanding dev builds vs Expo Go
+- \`eas-build\` — cloud builds, profiles, OTA updates
+- \`routing\` — file-based routing, tabs, navigation
+- \`image-media\` — expo-image, image picker, camera
+- \`animations\` — react-native-reanimated patterns
+- \`haptics-gestures\` — expo-haptics, gesture-handler, keyboard-controller
 
 ## Available Tools
 
@@ -79,19 +106,19 @@ Rename or move a file.
 ### searchFiles
 Search for a text pattern across project files. Returns matching file paths and line numbers.
 
-### lookupConvexDocs
-Look up Convex documentation for advanced features BEFORE implementing them. Topics: file-storage, full-text-search, pagination, http-actions, scheduling-cron, scheduling-runtime, actions-nodejs, typescript-types, function-calling, query-advanced, mutation-advanced, presence.
-
-### lookupExpoDocs
-Look up Expo/React Native documentation for features BEFORE implementing them. Topics: dev-build, eas-build, routing, image-media, animations, haptics-gestures.
+### lookupDocs
+Read reference documentation for advanced Convex and Expo features. Always call BEFORE
+implementing features you haven't used in this session. Specify the skill ("convex" or "expo")
+and the specific topics you need.
 
 ### addEnvironmentVariables
-When the app needs external API keys or secrets, use this tool to instruct the user on which environment variables to set on their Convex deployment.
+When the app needs external API keys or secrets, use this tool to instruct the user on which
+environment variables to set on their Convex deployment.
 
 ## Workflow
 
 1. Start by reading the existing template files to understand the current state
-2. **Look up docs** for any advanced features you plan to implement (use \`lookupConvexDocs\` and \`lookupExpoDocs\`)
+2. **Look up docs** for any advanced features you plan to implement (use \`lookupDocs\`)
 3. Design the theme (colors.ts) unique to this app
 4. Build/update UI components
 5. Add tables to Convex schema (keep ...authTables and users)

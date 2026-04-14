@@ -1,10 +1,10 @@
-export const expoAnimationsDocs = `
 # Animations — react-native-reanimated (already in template)
 
 ALWAYS use reanimated. NEVER use React Native's built-in Animated API.
 
 ## Basic animated value
-\`\`\`tsx
+
+```tsx
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -34,10 +34,11 @@ function FadeBox() {
 
   return <Animated.View style={[styles.box, animatedStyle]} />;
 }
-\`\`\`
+```
 
 ## Entering/Exiting animations (layout animations)
-\`\`\`tsx
+
+```tsx
 <Animated.View entering={FadeIn.duration(300)} exiting={FadeOut.duration(200)}>
   <AppText>Hello</AppText>
 </Animated.View>
@@ -51,10 +52,11 @@ function FadeBox() {
 <Animated.View layout={Layout.springify()}>
   <TodoItem />
 </Animated.View>
-\`\`\`
+```
 
 ## Spring animation
-\`\`\`tsx
+
+```tsx
 const scale = useSharedValue(1);
 
 const onPress = () => {
@@ -67,10 +69,11 @@ const onPress = () => {
 const animatedStyle = useAnimatedStyle(() => ({
   transform: [{ scale: scale.value }],
 }));
-\`\`\`
+```
 
 ## Gesture + Animation (with react-native-gesture-handler)
-\`\`\`tsx
+
+```tsx
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from "react-native-reanimated";
 
@@ -93,13 +96,13 @@ function SwipeCard() {
     </GestureDetector>
   );
 }
-\`\`\`
+```
 
 ## Rules
-- ALWAYS import from \`react-native-reanimated\`, NEVER from \`Animated\` in react-native
-- Use \`useSharedValue\` + \`useAnimatedStyle\` for imperative animations
+
+- ALWAYS import from `react-native-reanimated`, NEVER from `Animated` in react-native
+- Use `useSharedValue` + `useAnimatedStyle` for imperative animations
 - Use entering/exiting props for mount/unmount animations
-- Use \`withSpring\` for natural bouncy feel, \`withTiming\` for linear/eased
-- Combine with \`react-native-gesture-handler\` for interactive gestures
-- \`expo-haptics\` for touch feedback alongside animations
-`;
+- Use `withSpring` for natural bouncy feel, `withTiming` for linear/eased
+- Combine with `react-native-gesture-handler` for interactive gestures
+- `expo-haptics` for touch feedback alongside animations

@@ -1,10 +1,10 @@
-export const convexSchedulingCronDocs = `
-# Convex Cron Jobs
+# Convex Scheduling
 
-Define recurring tasks in \`convex/crons.ts\`.
+## Cron Jobs — convex/crons.ts
 
-\`\`\`ts
-// convex/crons.ts
+Define recurring tasks in `convex/crons.ts`.
+
+```ts
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 
@@ -20,54 +20,56 @@ crons.cron("daily report", "0 0 * * *", internal.reports.daily, {});
 crons.interval("sync", { minutes: 30 }, internal.sync.run, {});
 
 export default crons;
-\`\`\`
+```
 
-## Rules
-- Cron handlers must be \`internal\` mutations or actions
-- The file must be \`convex/crons.ts\` and export default the cronJobs instance
+### Cron rules
+
+- Cron handlers must be `internal` mutations or actions
+- The file must be `convex/crons.ts` and export default the cronJobs instance
 - Cron expressions use UTC timezone
-- Use \`interval\` for simple recurring schedules, \`cron\` for specific times
-`;
+- Use `interval` for simple recurring schedules, `cron` for specific times
 
-export const convexSchedulingRuntimeDocs = `
-# Convex Runtime Scheduling
+## Runtime Scheduling
 
 Schedule functions to run after a delay or at a specific time from within mutations/actions.
 
-## Schedule after delay
-\`\`\`ts
+### Schedule after delay
+
+```ts
 export const scheduleReminder = mutation({
   args: { userId: v.id("users"), msg: v.string(), delayMs: v.number() },
   handler: async (ctx, { userId, msg, delayMs }) => {
     await ctx.scheduler.runAfter(delayMs, internal.reminders.send, { userId, msg });
   },
 });
-\`\`\`
+```
 
-## Schedule at specific time
-\`\`\`ts
+### Schedule at specific time
+
+```ts
 export const scheduleAt = mutation({
   args: { userId: v.id("users"), msg: v.string(), timestamp: v.number() },
   handler: async (ctx, { userId, msg, timestamp }) => {
     await ctx.scheduler.runAt(timestamp, internal.reminders.send, { userId, msg });
   },
 });
-\`\`\`
+```
 
-## Cancel a scheduled function
-\`\`\`ts
+### Cancel a scheduled function
+
+```ts
 export const cancel = mutation({
   args: { scheduledId: v.id("_scheduled_functions") },
   handler: async (ctx, { scheduledId }) => {
     await ctx.scheduler.cancel(scheduledId);
   },
 });
-\`\`\`
+```
 
-## Rules
-- \`ctx.scheduler\` is available in mutations and actions
-- \`runAfter(delayMs, fnRef, args)\` — delay in milliseconds
-- \`runAt(timestamp, fnRef, args)\` — Unix timestamp in milliseconds
-- Returns a \`Id<"_scheduled_functions">\` that can be stored and used to cancel
-- Scheduled function references should be \`internal\` for security
-`;
+### Runtime scheduling rules
+
+- `ctx.scheduler` is available in mutations and actions
+- `runAfter(delayMs, fnRef, args)` — delay in milliseconds
+- `runAt(timestamp, fnRef, args)` — Unix timestamp in milliseconds
+- Returns a `Id<"_scheduled_functions">` that can be stored and used to cancel
+- Scheduled function references should be `internal` for security

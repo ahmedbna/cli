@@ -1,8 +1,8 @@
-export const convexFullTextSearchDocs = `
 # Convex Full-Text Search
 
 ## Define a search index
-\`\`\`ts
+
+```ts
 // convex/schema.ts
 messages: defineTable({
   body: v.string(),
@@ -14,10 +14,11 @@ messages: defineTable({
     searchField: "body",
     filterFields: ["channel"],
   })
-\`\`\`
+```
 
 ## Query with search
-\`\`\`ts
+
+```ts
 export const search = query({
   args: { q: v.string(), channel: v.optional(v.string()) },
   handler: async (ctx, { q, channel }) => {
@@ -30,13 +31,13 @@ export const search = query({
       .take(10);
   },
 });
-\`\`\`
+```
 
 ## Rules
-- \`searchField\` must be a \`v.string()\` field
-- \`filterFields\` are optional equality filters applied alongside the search
+
+- `searchField` must be a `v.string()` field
+- `filterFields` are optional equality filters applied alongside the search
 - Search queries return results ordered by relevance (not by creation time)
-- Use \`.take(n)\` to limit results — \`.collect()\` also works but returns all matches
+- Use `.take(n)` to limit results — `.collect()` also works but returns all matches
 - Each table can have multiple search indexes
-- Search indexes cannot be used with \`.order()\`
-`;
+- Search indexes cannot be used with `.order()`

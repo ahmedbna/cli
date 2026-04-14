@@ -1,26 +1,28 @@
-export const convexPresenceDocs = `
 # Convex Presence Component
 
 Manages live-updating user presence in a "room" without polling — uses scheduled functions so clients only update when users join/leave.
 
 ## Installation
-\`\`\`bash
+
+```bash
 npx expo install @convex-dev/presence expo-crypto
-\`\`\`
+```
 
 ## Setup
 
 ### convex/convex.config.ts
-\`\`\`ts
+
+```ts
 import { defineApp } from "convex/server";
 import presence from "@convex-dev/presence/convex.config";
 const app = defineApp();
 app.use(presence);
 export default app;
-\`\`\`
+```
 
 ### convex/presence.ts
-\`\`\`ts
+
+```ts
 import { mutation, query } from "./_generated/server";
 import { components } from "./_generated/api";
 import { v } from "convex/values";
@@ -63,10 +65,11 @@ export const disconnect = mutation({
   args: { sessionToken: v.string() },
   handler: async (ctx, { sessionToken }) => presence.disconnect(ctx, sessionToken),
 });
-\`\`\`
+```
 
 ## Usage in React Native
-\`\`\`tsx
+
+```tsx
 import { usePresence } from '@convex-dev/presence/react-native';
 import { api } from '@/convex/_generated/api';
 
@@ -74,10 +77,11 @@ function PresenceIndicator({ userId }: { userId: string }) {
   const presenceState = usePresence(api.presence, 'my-room', userId);
   return <FacePile presenceState={presenceState ?? []} />;
 }
-\`\`\`
+```
 
 ## PresenceState type
-\`\`\`ts
+
+```ts
 interface PresenceState {
   userId: string;
   online: boolean;
@@ -86,5 +90,4 @@ interface PresenceState {
   name?: string;
   image?: string;
 }
-\`\`\`
-`;
+```

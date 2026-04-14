@@ -1,13 +1,133 @@
 // src/agent/tools.ts
-// Tool definitions and executors for the CLI agent
-// Includes filesystem tools + doc lookup tools + environment variable tools
+// Tool definitions and executors for the CLI agent.
+//
+// Refactored to use:
+// - Zod schemas as the single source of truth for tool inputs
+// - z.toJSONSchema() to generate Anthropic API input_schema
+// - Skills-based documentation lookup (replaces lookupConvexDocs + lookupExpoDocs)
 
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import chalk, { type ChalkInstance } from 'chalk';
-import { convexDocs, CONVEX_DOC_TOPICS } from './tools/docs/convex/index.js';
-import { expoDocs, EXPO_DOC_TOPICS } from './tools/docs/expo/index.js';
+import { z } from 'zod';
+import { executeLookupDocs, SKILL_REGISTRY, SKILL_NAMES } from './skills.js';
+
+// ─── Zod Schemas (single source of truth) ────────────────────────────────────
+
+export const CreateFileSchema = z.object({
+  filePath: z
+    .string()
+    .describe(
+      'Relative path to the file (e.g. "app/(home)/index.tsx", "convex/schema.ts")',
+    ),
+  content: z
+    .string()
+    .describe('Full file content to write. Must be the complete file.'),
+});
+
+export const EditFileSchema = z.object({
+  filePath: z.string().describe('Relative path to the file to edit'),
+  oldText: z
+    .string()
+    .describe(
+      'The exact text to find and replace. Must be unique in the file and under 1024 chars.',
+    ),
+  newText: z.string().describe('The replacement text. Under 1024 chars.'),
+});
+
+export const RunCommandSchema = z.object({
+  command: z
+    .string()
+    .describe('Shell command to execute (e.g. "npx expo install expo-camera")'),
+  timeout: z
+    .number()
+    .optional()
+    .describe('Timeout in milliseconds (default 120000)'),
+});
+
+export const ViewFileSchema = z.object({
+  filePath: z.string().describe('Relative path to the file to read'),
+  startLine: z
+    .number()
+    .optional()
+    .describe('Optional start line (1-indexed). Omit to read entire file.'),
+  endLine: z
+    .number()
+    .optional()
+    .describe(
+      'Optional end line (1-indexed, inclusive). Use -1 for end of file.',
+    ),
+});
+
+export const ListDirectorySchema = z.object({
+  dirPath: z
+    .string()
+    .optional()
+    .describe('Relative directory path (default ".")'),
+  recursive: z
+    .boolean()
+    .optional()
+    .describe('If true, list up to 2 levels deep (default false)'),
+});
+
+export const DeleteFileSchema = z.object({
+  filePath: z
+    .string()
+    .describe('Relative path to the file or directory to delete'),
+});
+
+export const RenameFileSchema = z.object({
+  oldPath: z.string().describe('Current relative path of the file'),
+  newPath: z.string().describe('New relative path for the file'),
+});
+
+export const SearchFilesSchema = z.object({
+  pattern: z.string().describe('Text or regex pattern to search for'),
+  fileGlob: z
+    .string()
+    .optional()
+    .describe(
+      'Optional file glob to restrict search (e.g. "*.tsx", "convex/*.ts"). Default: all files.',
+    ),
+  maxResults: z
+    .number()
+    .optional()
+    .describe('Maximum number of results to return (default 20)'),
+});
+
+export const ReadMultipleFilesSchema = z.object({
+  filePaths: z
+    .array(z.string())
+    .describe('Array of relative file paths to read'),
+});
+
+// Build the valid topics enum dynamically from the skill registry
+const allTopicValues = Object.values(SKILL_REGISTRY).flatMap((s) => s.topics);
+
+export const LookupDocsSchema = z.object({
+  skill: z
+    .enum(SKILL_NAMES as [string, ...string[]])
+    .describe(
+      `Documentation skill to look up. Available: ${SKILL_NAMES.join(', ')}`,
+    ),
+  topics: z.array(z.string()).describe(
+    `Specific topics to read. Leave empty to get the skill overview. ` +
+      Object.entries(SKILL_REGISTRY)
+        .map(([name, { topics }]) => `${name}: ${topics.join(', ')}`)
+        .join('. '),
+  ),
+});
+
+export const AddEnvironmentVariablesSchema = z.object({
+  envVarNames: z
+    .array(z.string())
+    .describe(
+      'List of environment variable names to add (e.g. ["OPENAI_API_KEY", "STRIPE_SECRET_KEY"])',
+    ),
+});
+
+// ─── Tool name type ──────────────────────────────────────────────────────────
 
 export type ToolName =
   | 'createFile'
@@ -19,254 +139,80 @@ export type ToolName =
   | 'renameFile'
   | 'searchFiles'
   | 'readMultipleFiles'
-  | 'lookupConvexDocs'
-  | 'lookupExpoDocs'
+  | 'lookupDocs'
   | 'addEnvironmentVariables';
 
 // ─── Tool Definitions (sent to Anthropic API) ────────────────────────────────
+// Generated from Zod schemas using z.toJSONSchema()
+
+function toolDef(name: string, description: string, schema: z.ZodType) {
+  const jsonSchema = z.toJSONSchema(schema);
+  // Anthropic expects { type: 'object', properties: {...}, required: [...] }
+  // z.toJSONSchema wraps in a $schema — extract the relevant parts
+  const { $schema, ...rest } = jsonSchema as any;
+  return { name, description, input_schema: rest };
+}
 
 export const toolDefinitions = [
-  {
-    name: 'createFile' as const,
-    description:
-      'Create or overwrite a file on the local file system. The filePath is relative to the current project root. Always write the complete file content — no placeholders or "rest unchanged" comments.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        filePath: {
-          type: 'string',
-          description:
-            'Relative path to the file (e.g. "app/(home)/index.tsx", "convex/schema.ts")',
-        },
-        content: {
-          type: 'string',
-          description: 'Full file content to write. Must be the complete file.',
-        },
-      },
-      required: ['filePath', 'content'],
-    },
-  },
-  {
-    name: 'editFile' as const,
-    description:
-      'Replace a unique string in a file with new content. Use for targeted edits like bug fixes, adding imports, or modifying specific functions. The `oldText` must match exactly and appear only once in the file. Always use `viewFile` first to know current contents.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        filePath: {
-          type: 'string',
-          description: 'Relative path to the file to edit',
-        },
-        oldText: {
-          type: 'string',
-          description:
-            'The exact text to find and replace. Must be unique in the file and under 1024 chars.',
-        },
-        newText: {
-          type: 'string',
-          description: 'The replacement text. Under 1024 chars.',
-        },
-      },
-      required: ['filePath', 'oldText', 'newText'],
-    },
-  },
-  {
-    name: 'runCommand' as const,
-    description:
-      'Execute a shell command in the project directory. Use ONLY for: `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr. Long-running commands time out at 120s.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        command: {
-          type: 'string',
-          description:
-            'Shell command to execute (e.g. "npx expo install expo-camera")',
-        },
-        timeout: {
-          type: 'number',
-          description: 'Timeout in milliseconds (default 120000)',
-        },
-      },
-      required: ['command'],
-    },
-  },
-  {
-    name: 'viewFile' as const,
-    description:
-      'Read the contents of a file. Use before editing to know current state. Returns numbered lines.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        filePath: {
-          type: 'string',
-          description: 'Relative path to the file to read',
-        },
-        startLine: {
-          type: 'number',
-          description:
-            'Optional start line (1-indexed). Omit to read entire file.',
-        },
-        endLine: {
-          type: 'number',
-          description:
-            'Optional end line (1-indexed, inclusive). Use -1 for end of file.',
-        },
-      },
-      required: ['filePath'],
-    },
-  },
-  {
-    name: 'listDirectory' as const,
-    description:
-      'List files and directories at the given path. Returns names with (dir) or (file) markers. Filters out node_modules, .git, .expo, _generated.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        dirPath: {
-          type: 'string',
-          description: 'Relative directory path (default ".")',
-        },
-        recursive: {
-          type: 'boolean',
-          description: 'If true, list up to 2 levels deep (default false)',
-        },
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'deleteFile' as const,
-    description: 'Delete a file or an empty directory from the file system.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        filePath: {
-          type: 'string',
-          description: 'Relative path to the file or directory to delete',
-        },
-      },
-      required: ['filePath'],
-    },
-  },
-  {
-    name: 'renameFile' as const,
-    description: 'Rename or move a file from one path to another.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        oldPath: {
-          type: 'string',
-          description: 'Current relative path of the file',
-        },
-        newPath: {
-          type: 'string',
-          description: 'New relative path for the file',
-        },
-      },
-      required: ['oldPath', 'newPath'],
-    },
-  },
-  {
-    name: 'searchFiles' as const,
-    description:
-      'Search for a text pattern across project files. Returns matching file paths and line numbers. Useful for finding usages, imports, or specific code patterns.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        pattern: {
-          type: 'string',
-          description: 'Text or regex pattern to search for',
-        },
-        fileGlob: {
-          type: 'string',
-          description:
-            'Optional file glob to restrict search (e.g. "*.tsx", "convex/*.ts"). Default: all files.',
-        },
-        maxResults: {
-          type: 'number',
-          description: 'Maximum number of results to return (default 20)',
-        },
-      },
-      required: ['pattern'],
-    },
-  },
-  {
-    name: 'readMultipleFiles' as const,
-    description:
-      'Read the contents of multiple files at once. More efficient than calling viewFile multiple times. Returns an object mapping each path to its content.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        filePaths: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Array of relative file paths to read',
-        },
-      },
-      required: ['filePaths'],
-    },
-  },
-
-  // ─── Documentation Lookup Tools ─────────────────────────────────────────
-
-  {
-    name: 'lookupConvexDocs' as const,
-    description:
-      'Look up Convex documentation for advanced features before implementing. Call this BEFORE writing code for: file storage, full-text search, pagination, HTTP actions, scheduling/crons, Node.js actions, TypeScript types, function calling, advanced queries, advanced mutations, or presence.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        topics: {
-          type: 'array',
-          items: {
-            type: 'string',
-            enum: CONVEX_DOC_TOPICS,
-          },
-          description: `Advanced Convex topics to look up. Valid values: ${CONVEX_DOC_TOPICS.join(', ')}`,
-        },
-      },
-      required: ['topics'],
-    },
-  },
-  {
-    name: 'lookupExpoDocs' as const,
-    description:
-      'Look up Expo and React Native documentation for features before implementing. Call this BEFORE writing code for: dev builds, EAS builds, routing, image/media handling, animations, haptics, or gestures.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        topics: {
-          type: 'array',
-          items: {
-            type: 'string',
-            enum: EXPO_DOC_TOPICS,
-          },
-          description: `Expo/React Native topics to look up. Valid values: ${EXPO_DOC_TOPICS.join(', ')}`,
-        },
-      },
-      required: ['topics'],
-    },
-  },
-
-  // ─── Environment Variables Tool ──────────────────────────────────────────
-
-  {
-    name: 'addEnvironmentVariables' as const,
-    description:
-      'Instruct the user to add environment variables to their Convex deployment. Use this when the app requires API keys or secrets (e.g. OPENAI_API_KEY, STRIPE_SECRET_KEY). The tool returns instructions for the user to set these variables via the Convex dashboard or CLI.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        envVarNames: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'List of environment variable names to add (e.g. ["OPENAI_API_KEY", "STRIPE_SECRET_KEY"])',
-        },
-      },
-      required: ['envVarNames'],
-    },
-  },
+  toolDef(
+    'createFile',
+    'Create or overwrite a file on the local file system. The filePath is relative to the current project root. Always write the complete file content — no placeholders or "rest unchanged" comments.',
+    CreateFileSchema,
+  ),
+  toolDef(
+    'editFile',
+    'Replace a unique string in a file with new content. Use for targeted edits like bug fixes, adding imports, or modifying specific functions. The `oldText` must match exactly and appear only once in the file. Always use `viewFile` first to know current contents.',
+    EditFileSchema,
+  ),
+  toolDef(
+    'runCommand',
+    'Execute a shell command in the project directory. Use ONLY for: `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr. Long-running commands time out at 120s.',
+    RunCommandSchema,
+  ),
+  toolDef(
+    'viewFile',
+    'Read the contents of a file. Use before editing to know current state. Returns numbered lines.',
+    ViewFileSchema,
+  ),
+  toolDef(
+    'listDirectory',
+    'List files and directories at the given path. Returns names with (dir) or (file) markers. Filters out node_modules, .git, .expo, _generated.',
+    ListDirectorySchema,
+  ),
+  toolDef(
+    'deleteFile',
+    'Delete a file or an empty directory from the file system.',
+    DeleteFileSchema,
+  ),
+  toolDef(
+    'renameFile',
+    'Rename or move a file from one path to another.',
+    RenameFileSchema,
+  ),
+  toolDef(
+    'searchFiles',
+    'Search for a text pattern across project files. Returns matching file paths and line numbers. Useful for finding usages, imports, or specific code patterns.',
+    SearchFilesSchema,
+  ),
+  toolDef(
+    'readMultipleFiles',
+    'Read the contents of multiple files at once. More efficient than calling viewFile multiple times. Returns an object mapping each path to its content.',
+    ReadMultipleFilesSchema,
+  ),
+  toolDef(
+    'lookupDocs',
+    'Look up documentation for advanced Convex or Expo features BEFORE implementing them. ' +
+      'Reads from bundled skill reference files. Always call this before writing code for: ' +
+      'file storage, full-text search, pagination, HTTP actions, scheduling/crons, Node.js actions, ' +
+      'TypeScript types, function calling, advanced queries/mutations, presence, ' +
+      'dev builds, EAS builds, routing, image/media, animations, haptics/gestures.',
+    LookupDocsSchema,
+  ),
+  toolDef(
+    'addEnvironmentVariables',
+    'Instruct the user to add environment variables to their Convex deployment. Use this when the app requires API keys or secrets (e.g. OPENAI_API_KEY, STRIPE_SECRET_KEY). The tool returns instructions for the user to set these variables via the Convex dashboard or CLI.',
+    AddEnvironmentVariablesSchema,
+  ),
 ];
 
 // ─── Shimmer animation for action labels ─────────────────────────────────────
@@ -324,7 +270,7 @@ function showActionLabel(
 
 export function executeCreateFile(
   projectRoot: string,
-  args: { filePath: string; content: string },
+  args: z.infer<typeof CreateFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   const dir = path.dirname(fullPath);
@@ -343,7 +289,7 @@ export function executeCreateFile(
 
 export function executeEditFile(
   projectRoot: string,
-  args: { filePath: string; oldText: string; newText: string },
+  args: z.infer<typeof EditFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
 
@@ -377,7 +323,7 @@ export function executeEditFile(
 
 export function executeRunCommand(
   projectRoot: string,
-  args: { command: string; timeout?: number },
+  args: z.infer<typeof RunCommandSchema>,
 ): string {
   showActionLabel('run', args.command);
   try {
@@ -428,7 +374,7 @@ export function executeRunCommand(
 
 export function executeViewFile(
   projectRoot: string,
-  args: { filePath: string; startLine?: number; endLine?: number },
+  args: z.infer<typeof ViewFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   if (!fs.existsSync(fullPath)) {
@@ -451,7 +397,7 @@ export function executeViewFile(
 
 export function executeListDirectory(
   projectRoot: string,
-  args: { dirPath?: string; recursive?: boolean },
+  args: z.infer<typeof ListDirectorySchema>,
 ): string {
   const SKIP = new Set([
     'node_modules',
@@ -490,7 +436,7 @@ export function executeListDirectory(
 
 export function executeDeleteFile(
   projectRoot: string,
-  args: { filePath: string },
+  args: z.infer<typeof DeleteFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   if (!fs.existsSync(fullPath)) {
@@ -510,7 +456,7 @@ export function executeDeleteFile(
 
 export function executeRenameFile(
   projectRoot: string,
-  args: { oldPath: string; newPath: string },
+  args: z.infer<typeof RenameFileSchema>,
 ): string {
   const srcFull = path.resolve(projectRoot, args.oldPath);
   const destFull = path.resolve(projectRoot, args.newPath);
@@ -528,7 +474,7 @@ export function executeRenameFile(
 
 export function executeSearchFiles(
   projectRoot: string,
-  args: { pattern: string; fileGlob?: string; maxResults?: number },
+  args: z.infer<typeof SearchFilesSchema>,
 ): string {
   const maxResults = args.maxResults ?? 20;
 
@@ -555,7 +501,7 @@ export function executeSearchFiles(
 
 export function executeReadMultipleFiles(
   projectRoot: string,
-  args: { filePaths: string[] },
+  args: z.infer<typeof ReadMultipleFilesSchema>,
 ): string {
   const results: string[] = [];
 
@@ -579,55 +525,11 @@ export function executeReadMultipleFiles(
   return results.join('\n\n');
 }
 
-// ─── Documentation Lookup Executors ──────────────────────────────────────────
-
-export function executeLookupConvexDocs(
-  _projectRoot: string,
-  args: { topics: string[] },
-): string {
-  const results: string[] = [];
-
-  for (const topic of args.topics) {
-    const doc = convexDocs[topic];
-    if (doc) {
-      results.push(doc);
-    } else {
-      results.push(
-        `Unknown Convex topic: "${topic}". Valid topics: ${CONVEX_DOC_TOPICS.join(', ')}`,
-      );
-    }
-  }
-
-  showActionLabel('docs', `Convex: ${args.topics.join(', ')}`);
-  return results.join('\n\n---\n\n');
-}
-
-export function executeLookupExpoDocs(
-  _projectRoot: string,
-  args: { topics: string[] },
-): string {
-  const results: string[] = [];
-
-  for (const topic of args.topics) {
-    const doc = expoDocs[topic];
-    if (doc) {
-      results.push(doc);
-    } else {
-      results.push(
-        `Unknown Expo topic: "${topic}". Valid topics: ${EXPO_DOC_TOPICS.join(', ')}`,
-      );
-    }
-  }
-
-  showActionLabel('docs', `Expo: ${args.topics.join(', ')}`);
-  return results.join('\n\n---\n\n');
-}
-
 // ─── Environment Variables Executor ──────────────────────────────────────────
 
 export function executeAddEnvironmentVariables(
   _projectRoot: string,
-  args: { envVarNames: string[] },
+  args: z.infer<typeof AddEnvironmentVariablesSchema>,
 ): string {
   const names = args.envVarNames;
 
@@ -656,29 +558,63 @@ export function executeTool(
 ): string {
   switch (toolName) {
     case 'createFile':
-      return executeCreateFile(projectRoot, toolInput as any);
+      return executeCreateFile(
+        projectRoot,
+        toolInput as z.infer<typeof CreateFileSchema>,
+      );
     case 'editFile':
-      return executeEditFile(projectRoot, toolInput as any);
+      return executeEditFile(
+        projectRoot,
+        toolInput as z.infer<typeof EditFileSchema>,
+      );
     case 'runCommand':
-      return executeRunCommand(projectRoot, toolInput as any);
+      return executeRunCommand(
+        projectRoot,
+        toolInput as z.infer<typeof RunCommandSchema>,
+      );
     case 'viewFile':
-      return executeViewFile(projectRoot, toolInput as any);
+      return executeViewFile(
+        projectRoot,
+        toolInput as z.infer<typeof ViewFileSchema>,
+      );
     case 'listDirectory':
-      return executeListDirectory(projectRoot, toolInput as any);
+      return executeListDirectory(
+        projectRoot,
+        toolInput as z.infer<typeof ListDirectorySchema>,
+      );
     case 'deleteFile':
-      return executeDeleteFile(projectRoot, toolInput as any);
+      return executeDeleteFile(
+        projectRoot,
+        toolInput as z.infer<typeof DeleteFileSchema>,
+      );
     case 'renameFile':
-      return executeRenameFile(projectRoot, toolInput as any);
+      return executeRenameFile(
+        projectRoot,
+        toolInput as z.infer<typeof RenameFileSchema>,
+      );
     case 'searchFiles':
-      return executeSearchFiles(projectRoot, toolInput as any);
+      return executeSearchFiles(
+        projectRoot,
+        toolInput as z.infer<typeof SearchFilesSchema>,
+      );
     case 'readMultipleFiles':
-      return executeReadMultipleFiles(projectRoot, toolInput as any);
-    case 'lookupConvexDocs':
-      return executeLookupConvexDocs(projectRoot, toolInput as any);
-    case 'lookupExpoDocs':
-      return executeLookupExpoDocs(projectRoot, toolInput as any);
+      return executeReadMultipleFiles(
+        projectRoot,
+        toolInput as z.infer<typeof ReadMultipleFilesSchema>,
+      );
+    case 'lookupDocs': {
+      const args = toolInput as z.infer<typeof LookupDocsSchema>;
+      showActionLabel(
+        'docs',
+        `${args.skill}: ${args.topics.join(', ') || 'overview'}`,
+      );
+      return executeLookupDocs(args);
+    }
     case 'addEnvironmentVariables':
-      return executeAddEnvironmentVariables(projectRoot, toolInput as any);
+      return executeAddEnvironmentVariables(
+        projectRoot,
+        toolInput as z.infer<typeof AddEnvironmentVariablesSchema>,
+      );
     default:
       return `Error: Unknown tool ${toolName}`;
   }

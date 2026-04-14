@@ -1,11 +1,10 @@
-export const convexFileStorageDocs = `
 # Convex File Storage
 
-Store \`storageId\` (not URLs) in DB. Get URL on read: \`await ctx.storage.getUrl(storageId)\`
+Store `storageId` (not URLs) in DB. Get URL on read: `await ctx.storage.getUrl(storageId)`
 
 ## Upload Flow
 
-\`\`\`ts
+```ts
 // convex/files.ts
 export const generateUploadUrl = mutation({
   handler: async (ctx) => ctx.storage.generateUploadUrl(),
@@ -28,18 +27,20 @@ export const getFiles = query({
     })));
   },
 });
-\`\`\`
+```
 
 ## Schema
-\`\`\`ts
+
+```ts
 files: defineTable({
   userId: v.id("users"),
   storageId: v.id("_storage"),
 }).index("by_user", ["userId"])
-\`\`\`
+```
 
 ## React Native Upload
-\`\`\`tsx
+
+```tsx
 import * as ImagePicker from "expo-image-picker";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -72,15 +73,15 @@ function UploadButton() {
 
   return <Button onPress={pickAndUpload} title="Upload" />;
 }
-\`\`\`
+```
 
 ## Delete stored file
-\`\`\`ts
+
+```ts
 export const deleteFile = mutation({
   args: { storageId: v.id("_storage") },
   handler: async (ctx, { storageId }) => {
     await ctx.storage.delete(storageId);
   },
 });
-\`\`\`
-`;
+```

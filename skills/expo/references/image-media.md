@@ -1,12 +1,14 @@
-export const expoImageMediaDocs = `
 # Expo Image & Media
 
 ## expo-image
+
 Performant image component — use instead of React Native's Image.
-\`\`\`bash
+
+```bash
 npx expo install expo-image
-\`\`\`
-\`\`\`tsx
+```
+
+```tsx
 import { Image } from "expo-image";
 
 <Image
@@ -16,13 +18,15 @@ import { Image } from "expo-image";
   placeholder={{ blurhash: "LEHV6nWB2yk8pyoJadR*.7kCMdnj" }}
   transition={200}
 />
-\`\`\`
+```
 
 ## expo-image-picker (requires install + rebuild)
-\`\`\`bash
+
+```bash
 npx expo install expo-image-picker
-\`\`\`
-\`\`\`tsx
+```
+
+```tsx
 import * as ImagePicker from "expo-image-picker";
 
 const pickImage = async () => {
@@ -46,10 +50,11 @@ const takePhoto = async () => {
   });
   // ...
 };
-\`\`\`
+```
 
 ## app.json permissions
-\`\`\`json
+
+```json
 {
   "expo": {
     "plugins": [
@@ -63,17 +68,19 @@ const takePhoto = async () => {
     ]
   }
 }
-\`\`\`
+```
 
 ## expo-camera (requires install + rebuild)
-\`\`\`bash
+
+```bash
 npx expo install expo-camera
-\`\`\`
+```
+
 Requires native rebuild after installation.
 
 ## Rules
-- Always use \`expo-image\` (already installed) over RN \`Image\`
-- \`expo-image-picker\` and \`expo-camera\` require native rebuild
-- Update \`app.json\` with permissions when using camera/photos
-- Always handle \`result.canceled\` check
-`;
+
+- Always use `expo-image` (already installed) over RN `Image`
+- `expo-image-picker` and `expo-camera` require native rebuild
+- Update `app.json` with permissions when using camera/photos
+- Always handle `result.canceled` check
