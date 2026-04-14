@@ -6,6 +6,10 @@
 //
 // Auth: uses CLI JWT (30-day expiry) passed via authToken option.
 // On 401, automatically attempts token refresh and retries once.
+//
+// Skills: uses Anthropic Agent Skills API via the server proxy.
+// The server passes container.skills to Anthropic so Claude can use
+// pre-built (pptx, xlsx, docx, pdf) or custom skills.
 
 import { generalSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
@@ -24,6 +28,12 @@ export interface AgentOptions {
   stack: 'expo' | 'expo-convex';
   /** Pre-validated auth token — avoids reading a stale token from the store */
   authToken?: string;
+  /** Skills to load via Anthropic Agent Skills API */
+  skills?: Array<{
+    type: 'anthropic' | 'custom';
+    skill_id: string;
+    version?: string;
+  }>;
   onCreditsUsed?: (input: number, output: number) => Promise<void>;
 }
 
@@ -121,7 +131,6 @@ const SHIMMER_COLORS = [
 ];
 
 function createShimmerSpinner(text: string) {
-  let frame = 0;
   let colorIdx = 0;
 
   const spinner = ora({
@@ -207,6 +216,11 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.info(chalk.bold('Starting BNA Agent...'));
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
+  if (options.skills?.length) {
+    log.info(
+      `Skills: ${chalk.cyan(options.skills.map((s) => s.skill_id).join(', '))}`,
+    );
+  }
   log.divider();
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -218,6 +232,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         systemPrompt,
         messages,
         toolDefinitions,
+        options.skills,
       );
     } catch (err: any) {
       log.error(`Network error: ${err.message ?? 'Unknown error'}`);
@@ -234,13 +249,13 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         authToken = refreshedToken;
         log.success('Token refreshed, retrying...');
 
-        // Retry the request with the fresh token
         try {
           response = await fetchStream(
             authToken,
             systemPrompt,
             messages,
             toolDefinitions,
+            options.skills,
           );
         } catch (err: any) {
           log.error(
@@ -249,7 +264,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
           process.exit(1);
         }
 
-        // If still 401 after refresh, give up
         if (response.status === 401) {
           log.error(
             'Authentication expired. Run `bna login` to re-authenticate.',
@@ -263,6 +277,14 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         );
         process.exit(1);
       }
+    }
+
+    // ── Handle 402 Payment Required (insufficient credits) ────────────────
+    if (response.status === 402) {
+      log.error(
+        'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
+      );
+      process.exit(1);
     }
 
     if (!response.ok) {
@@ -282,11 +304,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         // ignore parse errors
       }
 
-      if (response.status === 402) {
-        log.error(
-          'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
-        );
-      } else if (response.status === 404) {
+      if (response.status === 404) {
         log.error(
           'API endpoint not found. The BNA server may be updating — please try again in a moment.',
         );
@@ -378,7 +396,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
-  // ── Deduct credits ────────────────────────────────────────────────────────
+  // ── Deduct credits (server-side — this is a confirmation callback) ────────
   if (options.onCreditsUsed) {
     try {
       await options.onCreditsUsed(
@@ -401,14 +419,30 @@ async function fetchStream(
   systemPrompt: string,
   messages: any[],
   tools: any[],
+  skills?: Array<{
+    type: 'anthropic' | 'custom';
+    skill_id: string;
+    version?: string;
+  }>,
 ): Promise<Response> {
+  const body: Record<string, any> = {
+    system: systemPrompt,
+    messages,
+    tools,
+  };
+
+  // Pass skills configuration to the server for Anthropic Agent Skills API
+  if (skills && skills.length > 0) {
+    body.skills = skills;
+  }
+
   return fetch(`${API_BASE}/api/cli-chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({ system: systemPrompt, messages, tools }),
+    body: JSON.stringify(body),
   });
 }
 

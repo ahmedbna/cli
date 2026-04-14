@@ -39,6 +39,10 @@ program
   .option('-p, --prompt <prompt>', 'App description prompt')
   .option('-n, --name <name>', 'Project name')
   .option('-s, --stack <stack>', 'Stack: expo | expo-convex')
+  .option(
+    '--skills <skills>',
+    'Anthropic Agent Skills to use (comma-separated: pptx,xlsx,docx,pdf or custom skill IDs)',
+  )
   .option('--no-install', 'Skip npm install after generation')
   .option('--no-run', 'Skip running the dev server after generation')
   .action(generateCommand);

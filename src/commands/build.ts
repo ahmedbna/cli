@@ -17,6 +17,8 @@ interface GenerateOptions {
   stack?: string;
   install?: boolean;
   run?: boolean;
+  /** Anthropic Agent Skills to use (e.g. "pptx,xlsx") */
+  skills?: string;
 }
 
 /**
@@ -87,6 +89,30 @@ function runInteractive(command: string, cwd: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Parse --skills flag into Agent Skills config.
+ * Supports Anthropic pre-built skills (pptx, xlsx, docx, pdf) and custom skill IDs.
+ */
+function parseSkills(
+  skillsFlag?: string,
+): Array<{ type: 'anthropic' | 'custom'; skill_id: string; version: string }> {
+  if (!skillsFlag) return [];
+
+  const ANTHROPIC_SKILLS = new Set(['pptx', 'xlsx', 'docx', 'pdf']);
+
+  return skillsFlag
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((skillId) => ({
+      type: ANTHROPIC_SKILLS.has(skillId)
+        ? ('anthropic' as const)
+        : ('custom' as const),
+      skill_id: skillId,
+      version: 'latest',
+    }));
 }
 
 export async function generateCommand(options: GenerateOptions): Promise<void> {
@@ -194,6 +220,9 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     prompt = promptAnswer.prompt;
   }
 
+  // Parse skills from --skills flag
+  const skills = parseSkills(options.skills);
+
   console.log();
   log.info(`Project: ${chalk.cyan(projectName)}`);
   log.info(`Stack:   ${chalk.cyan(stack)}`);
@@ -201,6 +230,11 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     `Prompt:  ${chalk.cyan(prompt.length > 80 ? prompt.slice(0, 80) + '...' : prompt)}`,
   );
   log.info(`Path:    ${chalk.dim(projectRoot)}`);
+  if (skills.length > 0) {
+    log.info(
+      `Skills:  ${chalk.cyan(skills.map((s) => s.skill_id).join(', '))} ${chalk.dim('(Anthropic Agent Skills API)')}`,
+    );
+  }
   console.log();
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -342,6 +376,13 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     chalk.dim('The agent will customize your app based on the description.'),
   );
   log.info(chalk.dim('Every file action will be displayed in this terminal.'));
+  if (skills.length > 0) {
+    log.info(
+      chalk.dim(
+        `Using Anthropic Agent Skills: ${skills.map((s) => s.skill_id).join(', ')}`,
+      ),
+    );
+  }
   console.log();
 
   const chatInitialId = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -350,8 +391,11 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectRoot,
     prompt,
     stack,
-    authToken: freshToken, // Pass the fresh token directly
+    authToken: freshToken,
+    skills: skills.length > 0 ? skills : undefined,
     onCreditsUsed: async (input, output) => {
+      // Credits are now deducted server-side in api.cli-chat.ts
+      // This callback is for CLI-side confirmation/logging only
       await deductCredits(input, output, chatInitialId);
     },
   });
