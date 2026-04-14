@@ -1,3 +1,8 @@
+---
+name: convex-file-storage
+description: Use when implementing file uploads, image storage, media handling, or file downloads with Convex storage. Trigger on "upload", "file storage", "store image", "media upload", "download file", "storageId", or any feature involving user-uploaded files.
+---
+
 # Convex File Storage
 
 Store `storageId` (not URLs) in DB. Get URL on read: `await ctx.storage.getUrl(storageId)`

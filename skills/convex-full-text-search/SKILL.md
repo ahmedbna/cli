@@ -1,3 +1,8 @@
+---
+name: convex-full-text-search
+description: Use when implementing text search, search indexes, or search queries in Convex. Trigger on "search", "full-text search", "search index", "text search", "find by text", or any feature that searches document content by keywords.
+---
+
 # Convex Full-Text Search
 
 ## Define a search index

@@ -1,3 +1,8 @@
+---
+name: convex-scheduling
+description: Use when implementing cron jobs, scheduled functions, delayed execution, or recurring tasks in Convex. Trigger on "cron", "scheduled", "recurring", "run after", "run at", "delayed", "timer", "background job", or any time-based function execution.
+---
+
 # Convex Scheduling
 
 ## Cron Jobs — convex/crons.ts

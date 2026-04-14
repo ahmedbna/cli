@@ -1,3 +1,8 @@
+---
+name: expo-animations
+description: Use when implementing animations in React Native — shared values, animated styles, entering/exiting transitions, spring physics, or gesture-driven animations. Trigger on "animation", "animate", "transition", "reanimated", "spring", "fade in", "slide", or any motion/visual effect. ALWAYS use react-native-reanimated, NEVER React Native's built-in Animated API.
+---
+
 # Animations — react-native-reanimated (already in template)
 
 ALWAYS use reanimated. NEVER use React Native's built-in Animated API.

@@ -1,3 +1,8 @@
+---
+name: convex-function-calling
+description: Use when calling Convex functions from within other functions — cross-context calls between queries, mutations, and actions. Trigger on "call query from action", "runQuery", "runMutation", "runAction", "api vs internal", "internal function", or cross-function orchestration.
+---
+
 # Convex Cross-Function Calling
 
 ## From actions — call queries, mutations, other actions

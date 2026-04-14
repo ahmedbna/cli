@@ -1,3 +1,8 @@
+---
+name: expo-routing
+description: Use when implementing navigation, file-based routing, tabs, dynamic routes, or protected routes with Expo Router. Trigger on "navigation", "routing", "tabs", "tab bar", "NativeTabs", "dynamic route", "router.push", "Link", "protected route", or any screen navigation pattern.
+---
+
 # Expo Router — File-Based Routing
 
 ## Directory = Route Group

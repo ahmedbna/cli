@@ -1,3 +1,8 @@
+---
+name: expo-haptics-gestures
+description: Use when implementing haptic feedback, touch gestures (tap, long press, swipe, pan), or keyboard handling in React Native. Trigger on "haptics", "vibration", "gesture", "swipe", "long press", "pan gesture", "keyboard", "KeyboardAwareScrollView", or any touch interaction beyond basic onPress.
+---
+
 # Haptics & Gestures
 
 ## expo-haptics (already in template)

@@ -1,3 +1,8 @@
+---
+name: convex-advanced-queries
+description: Use when implementing compound index queries, ordering, limiting, range filters, or conditional queries in Convex. Trigger on "compound index", "order by", "take", "range query", "conditional query", "skip query", or complex read patterns beyond basic get/list.
+---
+
 # Convex Advanced Queries
 
 ## Order and limit
@@ -17,6 +22,8 @@ const recent = await ctx.db.query("messages")
 ```
 
 ## Compound index query
+
+Define a compound index in your schema, then query with multiple equality checks:
 
 ```ts
 // Schema: .index("by_user_and_status", ["userId", "status"])
@@ -38,8 +45,9 @@ const profile = await ctx.db.query("profiles")
 
 ## Conditional query (skip)
 
+On the frontend, use `"skip"` to avoid running a query when args aren't ready:
+
 ```tsx
-// Frontend: skip query when args aren't ready
 const todo = useQuery(api.todos.get, id ? { id } : "skip");
 ```
 

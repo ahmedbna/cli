@@ -1,3 +1,8 @@
+---
+name: expo-eas-build
+description: Use when setting up EAS Build for cloud builds, configuring build profiles, publishing OTA updates, or preparing for App Store / Play Store submission. Trigger on "EAS", "cloud build", "build profile", "OTA update", "app store", "play store", "production build", or "eas.json".
+---
+
 # EAS Build (Expo Application Services)
 
 ## Setup

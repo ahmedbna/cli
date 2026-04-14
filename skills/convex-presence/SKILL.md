@@ -1,3 +1,8 @@
+---
+name: convex-presence
+description: Use when implementing real-time user presence, online indicators, or live user status with Convex. Trigger on "presence", "online indicator", "who's online", "live users", "real-time presence", or showing which users are currently active.
+---
+
 # Convex Presence Component
 
 Manages live-updating user presence in a "room" without polling — uses scheduled functions so clients only update when users join/leave.

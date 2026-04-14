@@ -1,5 +1,9 @@
 // src/agent/prompts.ts
-// System prompts for the BNA CLI agent — derived from bna-agent/prompts/
+// System prompts for the BNA CLI agent.
+//
+// Skills are now individual self-contained folders (one SKILL.md per feature).
+// The system prompt includes a catalog of all available skills so the agent
+// knows what to load via lookupDocs before implementing advanced features.
 
 import { stripIndents } from '../utils/stripIndent.js';
 import { convexGuidelines } from './prompts/convexGuidelines.js';
@@ -8,6 +12,7 @@ import { formattingInstructions } from './prompts/formattingInstructions.js';
 import { outputInstructions } from './prompts/outputInstructions.js';
 import { secretsInstructions } from './prompts/secretsInstructions.js';
 import { templateGuidelines } from './prompts/templateGuidelines.js';
+import { generateSkillsSummary } from './skills.js';
 
 export interface SystemPromptOptions {
   stack: 'expo' | 'expo-convex';
@@ -27,7 +32,14 @@ Be concise. Do not over-explain.
 IMPORTANT: You are running inside a CLI tool. Files are written to the REAL file system using the provided tools. Terminal commands execute via real child_process. There are no WebContainers or browser sandboxes.
 `;
 
-export const CLI_SYSTEM_PROMPT = `## CLI Agent Mode
+/**
+ * Generate the CLI system prompt section with the skills catalog injected.
+ * Skills are discovered at runtime from the skills/ directory.
+ */
+function buildCliSystemPrompt(): string {
+  const skillsCatalog = generateSkillsSummary();
+
+  return `## CLI Agent Mode
 
 You are running as a CLI agent on the user's local machine. The project template has ALREADY been copied and \`npm install\` has ALREADY been run. Do NOT:
 - Run \`npx create-expo-app\` or any project scaffolding command
@@ -44,36 +56,28 @@ You SHOULD:
 - Use \`searchFiles\` to find specific patterns across the codebase
 - Use \`deleteFile\` to remove files that aren't needed
 - Use \`renameFile\` to move/rename files
-- Use \`lookupDocs\` BEFORE implementing advanced features (see below)
+- Use \`lookupDocs\` BEFORE implementing advanced features (see skill catalog below)
 - Use \`addEnvironmentVariables\` when the app needs API keys or secrets set on the Convex deployment
 
 ## Documentation Lookup — lookupDocs
 
-Use the \`lookupDocs\` tool to read reference documentation BEFORE implementing advanced features.
-This tool reads from bundled skill files — always call it before writing code for unfamiliar features.
+Use the \`lookupDocs\` tool to load reference documentation BEFORE implementing advanced features.
+Each skill is a self-contained doc covering one specific feature. Load only what you need — each
+skill consumes context tokens when loaded.
 
-### Convex topics (skill: "convex")
-Call \`lookupDocs({ skill: "convex", topics: [...] })\` before implementing:
-- \`file-storage\` — upload/download files, store images
-- \`full-text-search\` — search indexes, text search queries
-- \`pagination\` — paginated queries, infinite scroll
-- \`http-actions\` — webhooks, REST endpoints
-- \`scheduling\` — cron jobs and runtime-scheduled functions
-- \`node-actions\` — external API calls with \`"use node"\`
-- \`types\` — Doc/Id types, Infer, FunctionReturnType
-- \`function-calling\` — cross-context calls (api vs internal)
-- \`advanced-queries\` — compound indexes, ordering, conditional queries
-- \`advanced-mutations\` — batch insert, upsert, cascade delete
-- \`presence\` — real-time user presence indicators
+Call \`lookupDocs({ skills: ["skill-name"] })\` before writing code for that feature.
+You can load multiple skills at once: \`lookupDocs({ skills: ["convex-file-storage", "expo-image-media"] })\`
 
-### Expo topics (skill: "expo")
-Call \`lookupDocs({ skill: "expo", topics: [...] })\` before implementing:
-- \`dev-build\` — understanding dev builds vs Expo Go
-- \`eas-build\` — cloud builds, profiles, OTA updates
-- \`routing\` — file-based routing, tabs, navigation
-- \`image-media\` — expo-image, image picker, camera
-- \`animations\` — react-native-reanimated patterns
-- \`haptics-gestures\` — expo-haptics, gesture-handler, keyboard-controller
+### Available Skills
+
+${skillsCatalog}
+
+### When to use lookupDocs
+
+- ALWAYS call lookupDocs before implementing a feature covered by a skill
+- Load ONLY the specific skills you need — don't load all of them
+- If you need two related features (e.g. file upload + image picking), load both at once
+- You do NOT need lookupDocs for basic CRUD, simple queries, or standard React Native components
 
 ## Available Tools
 
@@ -107,9 +111,8 @@ Rename or move a file.
 Search for a text pattern across project files. Returns matching file paths and line numbers.
 
 ### lookupDocs
-Read reference documentation for advanced Convex and Expo features. Always call BEFORE
-implementing features you haven't used in this session. Specify the skill ("convex" or "expo")
-and the specific topics you need.
+Load reference documentation for specific features. Pass an array of skill names.
+Always call BEFORE writing code for unfamiliar or advanced features.
 
 ### addEnvironmentVariables
 When the app needs external API keys or secrets, use this tool to instruct the user on which
@@ -127,11 +130,12 @@ environment variables to set on their Convex deployment.
 8. Only install new packages if absolutely needed
 9. If the app needs external API keys, use \`addEnvironmentVariables\`
 `;
+}
 
 export function generalSystemPrompt(options: SystemPromptOptions) {
   return stripIndents`
   ${ROLE_SYSTEM_PROMPT}
-  ${CLI_SYSTEM_PROMPT}
+  ${buildCliSystemPrompt()}
   ${templateGuidelines()}
   ${convexGuidelines()}
   ${exampleDataInstructions()}

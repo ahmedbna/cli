@@ -1,3 +1,8 @@
+---
+name: convex-node-actions
+description: Use when implementing Convex actions that need Node.js built-ins like fetch, crypto, or external API calls. Trigger on "external API", "use node", "fetch API", "OpenAI", "third-party API", "process.env", or any action calling services outside Convex.
+---
+
 # Convex Node.js Actions
 
 Actions that need Node.js built-ins (fetch, crypto, fs, etc.) or npm packages.

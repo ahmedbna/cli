@@ -1,3 +1,8 @@
+---
+name: convex-http-actions
+description: Use when implementing HTTP endpoints, webhooks, or REST routes in Convex. Trigger on "webhook", "HTTP endpoint", "REST API", "http action", "API route", or any server-side HTTP handler that external services call.
+---
+
 # Convex HTTP Actions
 
 HTTP actions let you define HTTP endpoints on your Convex deployment.

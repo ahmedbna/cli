@@ -1,3 +1,8 @@
+---
+name: convex-pagination
+description: Use when implementing paginated queries, infinite scroll, or load-more patterns with Convex. Trigger on "pagination", "paginate", "infinite scroll", "load more", "paginatedQuery", "FlatList pagination", or any query returning results in pages.
+---
+
 # Convex Pagination
 
 ## Backend — paginated query

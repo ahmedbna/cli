@@ -1,3 +1,8 @@
+---
+name: convex-advanced-mutations
+description: Use when implementing batch inserts, upsert patterns, cascade deletes, or choosing between patch vs replace in Convex mutations. Trigger on "bulk create", "upsert", "delete related", "cascade delete", "patch vs replace", or any mutation that writes multiple documents.
+---
+
 # Convex Advanced Mutations
 
 ## Batch insert
@@ -36,6 +41,8 @@ await ctx.db.patch(id, { name: "New Name" });
 await ctx.db.replace(id, { name: "New", email: "new@example.com", bio: "" });
 ```
 
+Use `patch` for partial updates (most common). Use `replace` only when you need to ensure every field is explicitly set.
+
 ## Cascade delete
 
 ```ts
@@ -59,4 +66,5 @@ export const deleteUser = mutation({
 - Mutations write at most 8192 documents and 8 MiB per transaction
 - Mutation timeout is 1 second
 - Mutations are transactional — all writes succeed or all fail
-- Use `ctx.db.patch` for partial updates, `ctx.db.replace` for full replacement
+- NEVER use `.filter()` — always use `.withIndex()`
+- ALWAYS include arg validators, NEVER use return validators

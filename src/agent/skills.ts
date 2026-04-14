@@ -1,49 +1,25 @@
-// src/agent/tools/skills.ts
-// Skill resolver — reads documentation from the skills/ directory at runtime.
-// Skills are shipped as plain markdown files alongside the bundle (like templates/).
-// This replaces the old approach of embedding docs as TypeScript string exports.
+// src/agent/skills.ts
+// Skill resolver — auto-discovers individual skill folders at runtime.
+//
+// Each skill is a self-contained folder with its own SKILL.md:
+//   skills/convex-file-storage/SKILL.md
+//   skills/expo-animations/SKILL.md
+//   etc.
+//
+// The agent loads ONLY the specific skill it needs, saving tokens.
+// No more two-step "overview + reference" loading.
 
 import fs from 'fs';
 import path from 'path';
-import chalk from 'chalk';
 
-// ─── Available skills and their topics ───────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-export const SKILL_REGISTRY: Record<string, { description: string; topics: string[] }> = {
-  convex: {
-    description: 'Convex backend features: file storage, search, pagination, HTTP actions, scheduling, Node.js actions, types, function calling, advanced queries/mutations, presence',
-    topics: [
-      'file-storage',
-      'full-text-search',
-      'pagination',
-      'http-actions',
-      'scheduling',
-      'node-actions',
-      'types',
-      'function-calling',
-      'advanced-queries',
-      'advanced-mutations',
-      'presence',
-    ],
-  },
-  expo: {
-    description: 'Expo/React Native features: dev builds, EAS builds, routing, image/media, animations, haptics/gestures',
-    topics: [
-      'dev-build',
-      'eas-build',
-      'routing',
-      'image-media',
-      'animations',
-      'haptics-gestures',
-    ],
-  },
-};
-
-export const SKILL_NAMES = Object.keys(SKILL_REGISTRY);
-
-export const ALL_TOPICS = Object.entries(SKILL_REGISTRY).flatMap(
-  ([skill, { topics }]) => topics.map((t) => `${skill}/${t}`),
-);
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  /** Absolute path to the skill directory */
+  dirPath: string;
+}
 
 // ─── Resolve the skills directory ────────────────────────────────────────────
 
@@ -80,87 +56,126 @@ function resolveSkillsDir(): string {
   );
 }
 
-// ─── Read skill files ────────────────────────────────────────────────────────
+// ─── Discover skills ─────────────────────────────────────────────────────────
+
+let cachedRegistry: Map<string, SkillMetadata> | null = null;
 
 /**
- * Read the SKILL.md overview for a given skill.
+ * Parse YAML frontmatter from a SKILL.md file.
+ * Extracts `name` and `description` fields.
  */
-export function readSkillOverview(skillName: string): string {
-  const skillsDir = resolveSkillsDir();
-  const skillPath = path.join(skillsDir, skillName, 'SKILL.md');
+function parseFrontmatter(
+  content: string,
+): { name: string; description: string } | null {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) return null;
 
-  if (!fs.existsSync(skillPath)) {
-    return `Error: Skill "${skillName}" not found. Available skills: ${SKILL_NAMES.join(', ')}`;
-  }
+  const yaml = match[1];
+  const name = yaml.match(/^name:\s*(.+)$/m)?.[1]?.trim() ?? '';
+  const description = yaml.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? '';
 
-  return fs.readFileSync(skillPath, 'utf-8');
+  if (!name || !description) return null;
+  return { name, description };
 }
 
 /**
- * Read specific reference docs for a skill.
- * Returns concatenated content of all requested topics.
+ * Scan the skills/ directory and build a registry of all available skills.
+ * Each subdirectory with a SKILL.md is registered.
  */
-export function readSkillReferences(skillName: string, topics: string[]): string {
-  const skillsDir = resolveSkillsDir();
-  const refsDir = path.join(skillsDir, skillName, 'references');
-  const results: string[] = [];
+function discoverSkills(): Map<string, SkillMetadata> {
+  if (cachedRegistry) return cachedRegistry;
 
-  const registry = SKILL_REGISTRY[skillName];
-  if (!registry) {
-    return `Error: Unknown skill "${skillName}". Available skills: ${SKILL_NAMES.join(', ')}`;
+  const skillsDir = resolveSkillsDir();
+  const registry = new Map<string, SkillMetadata>();
+
+  const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const skillMdPath = path.join(skillsDir, entry.name, 'SKILL.md');
+    if (!fs.existsSync(skillMdPath)) continue;
+
+    const content = fs.readFileSync(skillMdPath, 'utf-8');
+    const meta = parseFrontmatter(content);
+    if (!meta) continue;
+
+    registry.set(meta.name, {
+      name: meta.name,
+      description: meta.description,
+      dirPath: path.join(skillsDir, entry.name),
+    });
   }
 
-  for (const topic of topics) {
-    if (!registry.topics.includes(topic)) {
-      results.push(
-        `Unknown topic "${topic}" for skill "${skillName}". ` +
-          `Valid topics: ${registry.topics.join(', ')}`,
-      );
-      continue;
-    }
+  cachedRegistry = registry;
+  return registry;
+}
 
-    const refPath = path.join(refsDir, `${topic}.md`);
-    if (!fs.existsSync(refPath)) {
-      results.push(`Error: Reference file not found: ${skillName}/references/${topic}.md`);
-      continue;
-    }
+// ─── Public API ──────────────────────────────────────────────────────────────
 
-    results.push(fs.readFileSync(refPath, 'utf-8'));
+/**
+ * Get all registered skill names.
+ */
+export function getSkillNames(): string[] {
+  return Array.from(discoverSkills().keys());
+}
+
+/**
+ * Get metadata for all skills (name + description).
+ * Used to build the system prompt so the agent knows what's available.
+ */
+export function getSkillMetadata(): SkillMetadata[] {
+  return Array.from(discoverSkills().values());
+}
+
+/**
+ * Read the full SKILL.md content for a specific skill.
+ * This is the main executor — the agent calls this to load a skill's instructions.
+ * Strips YAML frontmatter so the agent only gets the instruction body.
+ */
+export function readSkill(skillName: string): string {
+  const registry = discoverSkills();
+  const skill = registry.get(skillName);
+
+  if (!skill) {
+    const available = getSkillNames().join(', ');
+    return `Error: Unknown skill "${skillName}". Available skills: ${available}`;
+  }
+
+  const skillMdPath = path.join(skill.dirPath, 'SKILL.md');
+  const content = fs.readFileSync(skillMdPath, 'utf-8');
+
+  // Strip YAML frontmatter — the agent only needs the instructions body
+  const body = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
+  return body.trim();
+}
+
+/**
+ * Read multiple skills at once. More efficient for related features.
+ */
+export function readSkills(skillNames: string[]): string {
+  const results: string[] = [];
+
+  for (const name of skillNames) {
+    const content = readSkill(name);
+    results.push(`## Skill: ${name}\n\n${content}`);
   }
 
   return results.join('\n\n---\n\n');
 }
 
 /**
- * Main executor for the lookupDocs tool.
- * Reads skill overview + specific topic references.
+ * Generate a compact summary of all available skills for the system prompt.
+ * Only includes name + description (Level 1 metadata — always loaded, ~100 tokens per skill).
  */
-export function executeLookupDocs(args: {
-  skill: string;
-  topics: string[];
-}): string {
-  const { skill, topics } = args;
+export function generateSkillsSummary(): string {
+  const skills = getSkillMetadata();
 
-  // If no specific topics, return the SKILL.md overview
-  if (!topics || topics.length === 0) {
-    return readSkillOverview(skill);
+  if (skills.length === 0) {
+    return '(No skills available)';
   }
 
-  // Return the specific reference docs
-  return readSkillReferences(skill, topics);
-}
-
-/**
- * List all available skills and their topics (for agent discovery).
- */
-export function listAvailableSkills(): string {
-  const lines: string[] = ['# Available Documentation Skills\n'];
-
-  for (const [name, { description, topics }] of Object.entries(SKILL_REGISTRY)) {
-    lines.push(`## ${name}`);
-    lines.push(description);
-    lines.push(`Topics: ${topics.join(', ')}\n`);
-  }
+  const lines = skills.map((s) => `- **${s.name}**: ${s.description}`);
 
   return lines.join('\n');
 }

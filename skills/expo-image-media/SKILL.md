@@ -1,12 +1,13 @@
+---
+name: expo-image-media
+description: Use when implementing image display, image picking, camera capture, or media handling in React Native. Trigger on "image", "photo", "camera", "gallery", "image picker", "expo-image", "media", "blurhash", or displaying/uploading user photos.
+---
+
 # Expo Image & Media
 
 ## expo-image
 
-Performant image component — use instead of React Native's Image.
-
-```bash
-npx expo install expo-image
-```
+Performant image component — use instead of React Native's Image because it supports caching, blurhash placeholders, and transitions.
 
 ```tsx
 import { Image } from "expo-image";
@@ -69,14 +70,6 @@ const takePhoto = async () => {
   }
 }
 ```
-
-## expo-camera (requires install + rebuild)
-
-```bash
-npx expo install expo-camera
-```
-
-Requires native rebuild after installation.
 
 ## Rules
 

@@ -1,17 +1,16 @@
 // src/agent/tools.ts
 // Tool definitions and executors for the CLI agent.
 //
-// Refactored to use:
-// - Zod schemas as the single source of truth for tool inputs
-// - z.toJSONSchema() to generate Anthropic API input_schema
-// - Skills-based documentation lookup (replaces lookupConvexDocs + lookupExpoDocs)
+// The lookupDocs tool now takes a single skill name (e.g. "convex-file-storage")
+// instead of the old skill + topics pattern. Each skill is self-contained —
+// one SKILL.md per feature, loaded in full when requested.
 
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import chalk, { type ChalkInstance } from 'chalk';
 import { z } from 'zod';
-import { executeLookupDocs, SKILL_REGISTRY, SKILL_NAMES } from './skills.js';
+import { readSkill, readSkills, getSkillNames } from './skills.js';
 
 // ─── Zod Schemas (single source of truth) ────────────────────────────────────
 
@@ -102,21 +101,19 @@ export const ReadMultipleFilesSchema = z.object({
     .describe('Array of relative file paths to read'),
 });
 
-// Build the valid topics enum dynamically from the skill registry
-const allTopicValues = Object.values(SKILL_REGISTRY).flatMap((s) => s.topics);
+// Build the skill names dynamically at import time
+const skillNames = getSkillNames();
 
 export const LookupDocsSchema = z.object({
-  skill: z
-    .enum(SKILL_NAMES as [string, ...string[]])
+  skills: z
+    .array(z.string())
+    .min(1)
+    .max(4)
     .describe(
-      `Documentation skill to look up. Available: ${SKILL_NAMES.join(', ')}`,
+      `One or more skill names to load. Each skill is a self-contained reference doc. ` +
+        `Available: ${skillNames.join(', ')}. ` +
+        `Load only what you need — each skill consumes context tokens.`,
     ),
-  topics: z.array(z.string()).describe(
-    `Specific topics to read. Leave empty to get the skill overview. ` +
-      Object.entries(SKILL_REGISTRY)
-        .map(([name, { topics }]) => `${name}: ${topics.join(', ')}`)
-        .join('. '),
-  ),
 });
 
 export const AddEnvironmentVariablesSchema = z.object({
@@ -143,12 +140,9 @@ export type ToolName =
   | 'addEnvironmentVariables';
 
 // ─── Tool Definitions (sent to Anthropic API) ────────────────────────────────
-// Generated from Zod schemas using z.toJSONSchema()
 
 function toolDef(name: string, description: string, schema: z.ZodType) {
   const jsonSchema = z.toJSONSchema(schema);
-  // Anthropic expects { type: 'object', properties: {...}, required: [...] }
-  // z.toJSONSchema wraps in a $schema — extract the relevant parts
   const { $schema, ...rest } = jsonSchema as any;
   return { name, description, input_schema: rest };
 }
@@ -201,11 +195,11 @@ export const toolDefinitions = [
   ),
   toolDef(
     'lookupDocs',
-    'Look up documentation for advanced Convex or Expo features BEFORE implementing them. ' +
-      'Reads from bundled skill reference files. Always call this before writing code for: ' +
-      'file storage, full-text search, pagination, HTTP actions, scheduling/crons, Node.js actions, ' +
-      'TypeScript types, function calling, advanced queries/mutations, presence, ' +
-      'dev builds, EAS builds, routing, image/media, animations, haptics/gestures.',
+    'Load reference documentation for specific features BEFORE implementing them. ' +
+      'Each skill is a self-contained doc covering one feature. Load only what you need to save context. ' +
+      'Available skills: ' +
+      skillNames.join(', ') +
+      '.',
     LookupDocsSchema,
   ),
   toolDef(
@@ -236,7 +230,6 @@ function shimmerText(text: string, color: ChalkInstance): void {
     }
   }, 60);
 
-  // Block until animation completes
   const waitMs = totalFrames * 60 + 20;
   const start = Date.now();
   while (Date.now() - start < waitMs) {
@@ -255,7 +248,7 @@ function showActionLabel(
     delete: { verb: 'Removing', color: chalk.red },
     rename: { verb: 'Moving', color: chalk.blue },
     run: { verb: 'Running', color: chalk.magenta },
-    docs: { verb: 'Looking up', color: chalk.cyan },
+    docs: { verb: 'Loading skill', color: chalk.cyan },
     env: { verb: 'Environment', color: chalk.hex('#f59e0b') },
   };
 
@@ -604,11 +597,14 @@ export function executeTool(
       );
     case 'lookupDocs': {
       const args = toolInput as z.infer<typeof LookupDocsSchema>;
-      showActionLabel(
-        'docs',
-        `${args.skill}: ${args.topics.join(', ') || 'overview'}`,
-      );
-      return executeLookupDocs(args);
+      for (const skill of args.skills) {
+        showActionLabel('docs', skill);
+      }
+      // Load one skill or multiple
+      if (args.skills.length === 1) {
+        return readSkill(args.skills[0]);
+      }
+      return readSkills(args.skills);
     }
     case 'addEnvironmentVariables':
       return executeAddEnvironmentVariables(

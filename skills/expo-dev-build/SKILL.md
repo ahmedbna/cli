@@ -1,3 +1,8 @@
+---
+name: expo-dev-build
+description: Use when the user needs to understand dev builds vs Expo Go, when a native rebuild is required, or troubleshooting build issues. Trigger on "dev build", "rebuild", "native module", "expo run", "module not found", "native crash", or when installing packages that include native code.
+---
+
 # Expo Dev Build Guide
 
 ## What is a Dev Build?
