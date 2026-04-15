@@ -1,10 +1,10 @@
 // src/utils/credits.ts
-// Credits management via /api/cli-credits — authenticated with Bearer token
+//
+// Credits management via Convex HTTP actions.
+// All credit operations go through the Convex site URL — no Remix API routes.
 
-import { store, getAuthToken } from './store.js';
+import { store, getAuthToken, CONVEX_SITE_URL } from './store.js';
 import { log } from './logger.js';
-
-const API_BASE = 'https://ai.ahmedbna.com';
 
 export async function checkCredits(): Promise<{
   credits: number;
@@ -15,10 +15,8 @@ export async function checkCredits(): Promise<{
   try {
     const token = getAuthToken();
 
-    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const resp = await fetch(`${CONVEX_SITE_URL}/cli/credits`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
 
     if (resp.status === 401) {
@@ -59,76 +57,23 @@ export async function checkCredits(): Promise<{
   }
 }
 
+/**
+ * Credit deduction is now handled server-side in the /cli/chat endpoint.
+ * This function exists for backward compatibility but is largely a no-op —
+ * credits are deducted atomically by the Convex HTTP action after streaming.
+ */
 export async function deductCredits(
   inputTokens: number,
   outputTokens: number,
-  chatInitialId?: string,
+  _chatInitialId?: string,
 ): Promise<void> {
   if (inputTokens <= 0 && outputTokens <= 0) {
-    log.warn('No tokens to deduct — skipping credit deduction.');
     return;
   }
 
-  let token: string;
-  try {
-    token = getAuthToken();
-  } catch {
-    log.warn('Not authenticated — cannot deduct credits.');
-    return;
-  }
-
-  const body = {
-    promptTokens: inputTokens,
-    completionTokens: outputTokens,
-    chatInitialId: chatInitialId ?? `cli-${Date.now()}`,
-  };
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const resp = await fetch(`${API_BASE}/api/cli-credits`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.remainingCredits !== undefined) {
-          log.credits(data.remainingCredits);
-        }
-        if (data.creditsDeducted !== undefined) {
-          log.info(
-            `Credits deducted: ${data.creditsDeducted} ` +
-              `(${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output tokens)`,
-          );
-        }
-        return;
-      } else if (resp.status === 401) {
-        log.warn('Auth token expired. Run `bna login` to re-authenticate.');
-        return;
-      } else {
-        const errorText = await resp.text().catch(() => 'unknown error');
-        log.warn(
-          `Credit deduction failed (attempt ${attempt}/3): HTTP ${resp.status} — ${errorText}`,
-        );
-      }
-    } catch (err: any) {
-      log.warn(
-        `Credit deduction failed (attempt ${attempt}/3): ${err.message ?? 'network error'}`,
-      );
-    }
-
-    if (attempt < 3) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.pow(2, attempt - 1) * 1000),
-      );
-    }
-  }
-
-  log.warn(
-    'Could not deduct credits after 3 attempts. Usage will be reconciled on next login.',
+  // Credits are deducted server-side in the /cli/chat proxy.
+  // This callback is for CLI-side logging/confirmation only.
+  log.info(
+    `Server deducted credits for ${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output tokens`,
   );
 }

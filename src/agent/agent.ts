@@ -1,26 +1,22 @@
 // src/agent/agent.ts
-// Core agentic loop: BNA server proxy (streaming) → tool execution → feed results back
 //
-// Uses /api/cli-chat which streams Anthropic SSE events directly.
+// Core agentic loop: Convex HTTP action proxy (streaming) → tool execution → feed results back
+//
+// Uses /cli/chat on the Convex site URL which streams Anthropic SSE events directly.
 // The CLI reads the stream, accumulates content, executes tools, and loops.
 //
-// Auth: uses CLI JWT (30-day expiry) passed via authToken option.
+// Auth: uses Convex auth token passed via authToken option.
 // On 401, automatically attempts token refresh and retries once.
-//
-// Skills: uses Anthropic Agent Skills API via the server proxy.
-// The server passes container.skills to Anthropic so Claude can use
-// pre-built (pptx, xlsx, docx, pdf) or custom skills.
 
 import { generalSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
 import { log } from '../utils/logger.js';
-import { getAuthToken } from '../utils/store.js';
+import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
 import { refreshAuthToken } from '../utils/auth.js';
 import chalk from 'chalk';
 import ora from 'ora';
 
 const MAX_ROUNDS = 30;
-const API_BASE = 'https://ai.ahmedbna.com';
 
 export interface AgentOptions {
   projectRoot: string;
@@ -28,12 +24,6 @@ export interface AgentOptions {
   stack: 'expo' | 'expo-convex';
   /** Pre-validated auth token — avoids reading a stale token from the store */
   authToken?: string;
-  /** Skills to load via Anthropic Agent Skills API */
-  skills?: Array<{
-    type: 'anthropic' | 'custom';
-    skill_id: string;
-    version?: string;
-  }>;
   onCreditsUsed?: (input: number, output: number) => Promise<void>;
 }
 
@@ -216,11 +206,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.info(chalk.bold('Starting BNA Agent...'));
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
-  if (options.skills?.length) {
-    log.info(
-      `Skills: ${chalk.cyan(options.skills.map((s) => s.skill_id).join(', '))}`,
-    );
-  }
   log.divider();
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -228,11 +213,11 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     let response: Response;
     try {
       response = await fetchStream(
+        CONVEX_SITE_URL,
         authToken,
         systemPrompt,
         messages,
         toolDefinitions,
-        options.skills,
       );
     } catch (err: any) {
       log.error(`Network error: ${err.message ?? 'Unknown error'}`);
@@ -251,11 +236,11 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
         try {
           response = await fetchStream(
+            CONVEX_SITE_URL,
             authToken,
             systemPrompt,
             messages,
             toolDefinitions,
-            options.skills,
           );
         } catch (err: any) {
           log.error(
@@ -304,15 +289,10 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         // ignore parse errors
       }
 
-      if (response.status === 404) {
-        log.error(
-          'API endpoint not found. The BNA server may be updating — please try again in a moment.',
-        );
-        log.info(chalk.dim(`Details: ${errMsg}`));
-      } else if (response.status === 429) {
+      if (response.status === 429) {
         log.error('Rate limited. Please wait a moment and try again.');
-      } else if (response.status === 500) {
-        log.error('BNA server error. Please try again in a moment.');
+      } else if (response.status === 500 || response.status === 502) {
+        log.error('Server error. Please try again in a moment.');
         log.info(chalk.dim(`Details: ${errMsg}`));
       } else {
         log.error(`${errMsg}`);
@@ -396,7 +376,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
-  // ── Deduct credits (server-side — this is a confirmation callback) ────────
+  // Credits are deducted server-side — this callback is for CLI-side confirmation
   if (options.onCreditsUsed) {
     try {
       await options.onCreditsUsed(
@@ -404,7 +384,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         accumulated.outputTokens,
       );
     } catch (err: any) {
-      log.warn(`Credit deduction failed: ${err.message ?? 'unknown error'}`);
+      log.warn(`Credit confirmation failed: ${err.message ?? 'unknown error'}`);
     }
   }
 
@@ -415,34 +395,23 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
 
 async function fetchStream(
+  siteUrl: string,
   authToken: string,
   systemPrompt: string,
   messages: any[],
   tools: any[],
-  skills?: Array<{
-    type: 'anthropic' | 'custom';
-    skill_id: string;
-    version?: string;
-  }>,
 ): Promise<Response> {
-  const body: Record<string, any> = {
-    system: systemPrompt,
-    messages,
-    tools,
-  };
-
-  // Pass skills configuration to the server for Anthropic Agent Skills API
-  if (skills && skills.length > 0) {
-    body.skills = skills;
-  }
-
-  return fetch(`${API_BASE}/api/cli-chat`, {
+  return fetch(`${siteUrl}/cli/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      system: systemPrompt,
+      messages,
+      tools,
+    }),
   });
 }
 

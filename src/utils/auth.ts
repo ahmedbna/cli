@@ -1,28 +1,25 @@
 // src/utils/auth.ts
+//
 // Token validation and refresh utilities for the BNA CLI.
 //
-// The CLI now uses long-lived CLI JWTs (30-day expiry) signed by the server.
-// These replace the short-lived Convex auth JWTs that were expiring during
-// the 5+ minute build setup process.
+// Uses Convex's native auth tokens:
+//   - Auth token: short-lived JWT from @convex-dev/auth (~1 hour)
+//   - Refresh token: long-lived token used to get new auth tokens
 //
-// Flow:
-//   1. `bna login` → browser auth → server issues CLI JWT (30 days)
-//   2. `bna build` → ensureValidAuth() validates token before expensive work
-//   3. After npm install + Convex setup → revalidateAuth() refreshes if needed
-//   4. Agent runs with the fresh token
-//   5. If 401 mid-session → agent calls refreshAuthToken() and retries
+// The refresh endpoint is a Convex HTTP action at /cli/refresh.
+// No custom JWT signing — all token management is handled by Convex.
 
 import {
   store,
   getAuthToken,
+  getRefreshToken,
   isTokenExpired,
   clearAuth,
-  setAuthData,
+  updateAuthToken,
+  CONVEX_SITE_URL,
 } from './store.js';
 import { log } from './logger.js';
 import chalk from 'chalk';
-
-const API_BASE = 'https://ai.ahmedbna.com';
 
 export interface AuthValidation {
   valid: boolean;
@@ -33,46 +30,38 @@ export interface AuthValidation {
 }
 
 /**
- * Attempt to refresh the auth token by calling POST /api/cli-auth (refresh).
- * The server verifies the old token's signature (ignoring expiry), confirms
- * the user still exists, and issues a fresh 30-day CLI JWT.
+ * Refresh the auth token using the stored refresh token.
+ * Calls the Convex HTTP action at /cli/refresh.
  *
- * Returns the new token if successful, or null if refresh failed.
+ * Returns the new auth token if successful, or null if refresh failed.
  */
 export async function refreshAuthToken(): Promise<string | null> {
-  const currentToken = store.get('authToken');
-  if (!currentToken) return null;
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    log.warn('No refresh token available. Run `bna login` to re-authenticate.');
+    return null;
+  }
 
   try {
-    const resp = await fetch(`${API_BASE}/api/cli-auth`, {
+    const resp = await fetch(`${CONVEX_SITE_URL}/cli/refresh`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${currentToken}`,
-      },
-      body: JSON.stringify({ action: 'refresh' }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
     });
 
     if (resp.ok) {
       const data = await resp.json();
       if (data.token) {
-        // Store the fresh token
-        setAuthData({
-          token: data.token,
-          userId: data.userId ?? store.get('userId') ?? undefined,
-          email: data.email ?? store.get('email') ?? undefined,
-        });
-        log.success('Auth token refreshed.');
+        updateAuthToken(data.token, data.refreshToken);
         return data.token;
       }
     }
 
-    // 401 = token is too old to refresh, user needs to re-login
     if (resp.status === 401) {
+      log.warn('Refresh token expired. Run `bna login` to re-authenticate.');
       return null;
     }
 
-    // Other errors (404 = endpoint doesn't exist yet, etc.)
     return null;
   } catch {
     // Network error — can't refresh
@@ -81,9 +70,9 @@ export async function refreshAuthToken(): Promise<string | null> {
 }
 
 /**
- * Validate the stored auth token against the BNA server.
+ * Validate the stored auth token.
  * If the JWT is expired, attempts to refresh it first.
- * Returns the validation result with a fresh token if available.
+ * Then validates against the Convex credits endpoint.
  */
 export async function validateAuthToken(): Promise<AuthValidation> {
   let token: string;
@@ -100,10 +89,7 @@ export async function validateAuthToken(): Promise<AuthValidation> {
   }
 
   // Quick local check: is the JWT exp claim expired?
-  const jwtExpired = isTokenExpired();
-
-  if (jwtExpired) {
-    // Try to refresh the token before hitting the server
+  if (isTokenExpired()) {
     const refreshedToken = await refreshAuthToken();
     if (refreshedToken) {
       token = refreshedToken;
@@ -114,26 +100,41 @@ export async function validateAuthToken(): Promise<AuthValidation> {
         token,
       };
     }
-    // Refresh failed — fall through to server validation
+    // Refresh failed — token is expired and can't be refreshed
+    clearAuth();
+    return {
+      valid: false,
+      userId: null,
+      email: null,
+      token,
+      error: 'Authentication expired. Run `bna login` to re-authenticate.',
+    };
   }
 
-  // Validate against the server by calling GET /api/cli-credits
   try {
-    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const resp = await fetch(`${CONVEX_SITE_URL}/cli/credits`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
 
     if (resp.status === 401) {
+      // Token rejected — try refresh
+      const refreshedToken = await refreshAuthToken();
+      if (refreshedToken) {
+        return {
+          valid: true,
+          userId: store.get('userId'),
+          email: store.get('email'),
+          token: refreshedToken,
+        };
+      }
+
       clearAuth();
       return {
         valid: false,
         userId: null,
         email: null,
         token,
-        error:
-          'Your authentication has expired. Please run `bna login` to re-authenticate.',
+        error: 'Authentication expired. Run `bna login` to re-authenticate.',
       };
     }
 
@@ -160,7 +161,7 @@ export async function validateAuthToken(): Promise<AuthValidation> {
       token,
     };
   } catch {
-    // Network error — let the user proceed
+    // Network error — let the user proceed with current token
     return {
       valid: true,
       userId: store.get('userId'),
@@ -228,23 +229,28 @@ export async function revalidateAuth(): Promise<string> {
     process.exit(1);
   }
 
-  // 1. If token looks expired, try refreshing
+  // If token looks expired, try refreshing
   if (isTokenExpired()) {
-    log.info('Token expired during setup, attempting refresh...');
+    log.info('Token expired during setup, refreshing...');
     const refreshed = await refreshAuthToken();
-    if (refreshed) return refreshed;
+    if (refreshed) {
+      log.success('Token refreshed.');
+      return refreshed;
+    }
   }
 
-  // 2. Validate against server
   try {
-    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
+    const resp = await fetch(`${CONVEX_SITE_URL}/cli/credits`, {
       headers: { Authorization: `Bearer ${currentToken}` },
     });
 
     if (resp.status === 401) {
-      // Last chance: try refresh even if local check said it wasn't expired
+      // Try refresh
       const refreshed = await refreshAuthToken();
-      if (refreshed) return refreshed;
+      if (refreshed) {
+        log.success('Token refreshed.');
+        return refreshed;
+      }
 
       log.error(
         'Your authentication expired during setup.\n' +

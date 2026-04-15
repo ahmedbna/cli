@@ -1,15 +1,26 @@
 // src/commands/login.ts
+//
+// Browser-based OAuth login for the BNA CLI.
+//
+// Flow:
+//   1. Generate a random session_id
+//   2. Open browser to ai.ahmedbna.com/cli-login?session_id=XXX
+//   3. User signs in (Google/GitHub OAuth via Convex Auth)
+//   4. Browser page stores auth token + refresh token in Convex
+//   5. CLI polls Convex HTTP action at /cli/poll?session_id=XXX
+//   6. On success, CLI stores both tokens locally
+//
+// The polling endpoint is a Convex HTTP action — no Remix API route needed.
 
 import crypto from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
 import open from 'open';
-import { store, setAuthData } from '../utils/store.js';
+import { store, setAuthData, CONVEX_SITE_URL } from '../utils/store.js';
 import { log } from '../utils/logger.js';
 
-const API_BASE = 'https://ai.ahmedbna.com';
+const WEB_APP_URL = 'https://ai.ahmedbna.com';
 const LOGIN_PATH = '/cli-login';
-const POLL_PATH = '/api/cli-auth';
 const POLL_INTERVAL = 2000;
 const POLL_TIMEOUT = 300_000; // 5 minutes
 
@@ -32,13 +43,12 @@ export async function loginCommand(): Promise<void> {
       );
       return;
     } else {
-      // Session expired — clear and re-login
       log.info('Your previous session has expired. Starting fresh login...');
     }
   }
 
   const sessionId = crypto.randomUUID();
-  const loginUrl = `${API_BASE}${LOGIN_PATH}?session_id=${sessionId}`;
+  const loginUrl = `${WEB_APP_URL}${LOGIN_PATH}?session_id=${sessionId}`;
 
   log.info('Opening browser for authentication...');
   console.log();
@@ -54,18 +64,20 @@ export async function loginCommand(): Promise<void> {
 
   const spinner = ora('Waiting for authentication...').start();
 
+  // Determine the polling URL — use Convex site URL directly
+  const pollUrl = `${CONVEX_SITE_URL}/cli/poll`;
+
   const startTime = Date.now();
   while (Date.now() - startTime < POLL_TIMEOUT) {
     await sleep(POLL_INTERVAL);
 
     try {
-      const pollUrl = `${API_BASE}${POLL_PATH}?session_id=${encodeURIComponent(sessionId)}`;
-      const resp = await fetch(pollUrl);
+      const resp = await fetch(
+        `${pollUrl}?session_id=${encodeURIComponent(sessionId)}`,
+      );
 
       if (!resp.ok) {
-        if (resp.status !== 200) {
-          spinner.text = `Waiting for authentication... (server: ${resp.status})`;
-        }
+        spinner.text = `Waiting for authentication... (server: ${resp.status})`;
         continue;
       }
 
@@ -82,48 +94,25 @@ export async function loginCommand(): Promise<void> {
         continue;
       }
 
-      // We have a token!
+      // We have tokens!
       spinner.succeed('Authenticated!');
 
-      // Use setAuthData to store everything with 30-day session expiry
-      const authData: Parameters<typeof setAuthData>[0] = {
+      // Store auth data
+      setAuthData({
         token: data.token,
-      };
+        refreshToken: data.refreshToken ?? '',
+        userId: data.userId,
+        email: data.email,
+        convexSiteUrl: CONVEX_SITE_URL,
+      });
 
-      if (data.userId) authData.userId = data.userId;
-      if (data.email) authData.email = data.email;
-      if (data.convexAccessToken)
-        authData.convexAccessToken = data.convexAccessToken;
-      if (data.teamSlug) authData.teamSlug = data.teamSlug;
-
-      setAuthData(authData);
-
-      // Store additional fields directly
+      // Store additional Convex connection fields if present
       if (data.convexAccessToken) {
         store.set('convexAccessToken', data.convexAccessToken);
       }
       if (data.teamSlug) {
         store.set('convexTeamSlug', data.teamSlug);
       }
-
-      // If userId wasn't in the payload, try decoding the JWT
-      if (!data.userId && data.token) {
-        try {
-          const parts = data.token.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(
-              Buffer.from(parts[1], 'base64url').toString('utf-8'),
-            );
-            if (payload.sub) store.set('userId', payload.sub);
-            if (payload.email && !data.email) store.set('email', payload.email);
-          }
-        } catch {
-          // JWT decode failed — not critical
-        }
-      }
-
-      // Validate token + resolve userId server-side
-      await validateAndResolveUser();
 
       console.log();
       log.success(`Logged in as ${chalk.cyan(store.get('email') ?? 'user')}`);
@@ -140,29 +129,6 @@ export async function loginCommand(): Promise<void> {
   }
 
   spinner.fail('Authentication timed out. Please try again with `bna login`.');
-}
-
-/**
- * Call /api/cli-credits (GET) to validate the token and resolve userId
- * from the server. This ensures we have the correct Convex userId.
- */
-async function validateAndResolveUser(): Promise<void> {
-  const token = store.get('authToken');
-  if (!token) return;
-
-  try {
-    const resp = await fetch(`${API_BASE}/api/cli-credits`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.userId) store.set('userId', data.userId);
-      if (data.email) store.set('email', data.email);
-    }
-  } catch {
-    // Non-critical — we already have the token
-  }
 }
 
 function sleep(ms: number): Promise<void> {
