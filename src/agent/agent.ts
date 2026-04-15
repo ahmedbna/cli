@@ -22,7 +22,6 @@ export interface AgentOptions {
   projectRoot: string;
   prompt: string;
   stack: 'expo' | 'expo-convex';
-  /** Pre-validated auth token — avoids reading a stale token from the store */
   authToken?: string;
   onCreditsUsed?: (input: number, output: number) => Promise<void>;
 }

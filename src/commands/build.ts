@@ -17,7 +17,6 @@ interface GenerateOptions {
   stack?: string;
   install?: boolean;
   run?: boolean;
-  /** Anthropic Agent Skills to use (e.g. "pptx,xlsx") */
   skills?: string;
 }
 
@@ -121,7 +120,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   // ═══════════════════════════════════════════════════════════════════════════
   // STEP 1: Validate authentication FIRST (before ANY expensive operations)
   // ═══════════════════════════════════════════════════════════════════════════
-  const authResult = await ensureValidAuth();
+  await ensureValidAuth();
 
   // ═══════════════════════════════════════════════════════════════════════════
   // STEP 2: Check credits
@@ -241,7 +240,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   // STEP 4: Scaffold project
   // ═══════════════════════════════════════════════════════════════════════════
 
-  log.info('Scaffolding project from template...');
+  log.info('Initializing the app');
   try {
     const templateDir = resolveTemplateDir(stack);
 
@@ -250,9 +249,9 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
 
     copyTemplateDir(templateDir, projectRoot);
-    log.success(`Template copied to ${chalk.cyan(projectRoot)}`);
+    log.success(`App initialized at: ${chalk.cyan(projectRoot)}`);
   } catch (err: any) {
-    log.error(`Failed to copy template: ${err.message}`);
+    log.error(`Failed to initialize the app: ${err.message}`);
     process.exit(1);
   }
 
@@ -392,10 +391,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     prompt,
     stack,
     authToken: freshToken,
-    skills: skills.length > 0 ? skills : undefined,
     onCreditsUsed: async (input, output) => {
-      // Credits are now deducted server-side in api.cli-chat.ts
-      // This callback is for CLI-side confirmation/logging only
       await deductCredits(input, output, chatInitialId);
     },
   });
