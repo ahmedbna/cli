@@ -28,7 +28,6 @@ export interface AgentOptions {
   prompt: string;
   stack: 'expo' | 'expo-convex';
   authToken?: string;
-  onCreditsUsed?: (input: number, output: number) => Promise<void>;
 }
 
 interface TokenUsage {

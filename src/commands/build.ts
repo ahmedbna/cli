@@ -8,7 +8,7 @@ import inquirer from 'inquirer';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { log } from '../utils/logger.js';
 import { ensureValidAuth, revalidateAuth } from '../utils/auth.js';
-import { checkCredits, deductCredits } from '../utils/credits.js';
+import { checkCredits } from '../utils/credits.js';
 import { runAgent } from '../agent/agent.js';
 
 interface GenerateOptions {
@@ -391,9 +391,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     prompt,
     stack,
     authToken: freshToken,
-    onCreditsUsed: async (input, output) => {
-      await deductCredits(input, output, chatInitialId);
-    },
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
