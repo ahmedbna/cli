@@ -5,6 +5,11 @@
 // Uses /cli/chat on the Convex site URL which streams Anthropic SSE events directly.
 // The CLI reads the stream, accumulates content, executes tools, and loops.
 //
+// Credit deduction:
+//   Credits are deducted SERVER-SIDE during streaming. The server injects custom
+//   SSE events (`bna_credits` and `bna_credits_final`) so the CLI can display
+//   running usage. The CLI does NOT control deduction — it only displays info.
+//
 // Auth: uses Convex auth token passed via authToken option.
 // On 401, automatically attempts token refresh and retries once.
 
@@ -29,6 +34,13 @@ export interface AgentOptions {
 interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+}
+
+// ─── Credit tracking from server events ──────────────────────────────────────
+
+interface CreditInfo {
+  creditsUsed: number;
+  remainingCredits: number;
 }
 
 // ─── Anthropic SSE event types ───────────────────────────────────────────────
@@ -176,6 +188,9 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
   const accumulated: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
+  // Track credit info received from server events
+  let latestCreditInfo: CreditInfo = { creditsUsed: 0, remainingCredits: -1 };
+
   const messages: Array<{ role: string; content: any }> = [
     {
       role: 'user',
@@ -207,6 +222,38 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
   log.divider();
 
+  // ── Register graceful exit handler ─────────────────────────────────────
+  // If the user presses Ctrl+C, display credit usage before exiting.
+  const exitHandler = () => {
+    console.log();
+    log.divider();
+    if (latestCreditInfo.creditsUsed > 0) {
+      log.info(
+        chalk.dim('Credits used: ') +
+          chalk.white(`${latestCreditInfo.creditsUsed}`),
+      );
+      if (latestCreditInfo.remainingCredits >= 0) {
+        log.info(
+          chalk.dim('Remaining: ') +
+            chalk.white(`${latestCreditInfo.remainingCredits}`),
+        );
+      }
+    }
+    log.info(
+      chalk.dim('Tokens used: ') +
+        chalk.white(`${accumulated.inputTokens.toLocaleString()} input`) +
+        chalk.dim(' + ') +
+        chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
+    );
+    log.warn(
+      'Agent interrupted. Credits for tokens already streamed have been deducted server-side.',
+    );
+    process.exit(0);
+  };
+
+  process.on('SIGINT', exitHandler);
+  process.on('SIGTERM', exitHandler);
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     // ── Call the streaming endpoint ────────────────────────────────────────
     let response: Response;
@@ -221,6 +268,9 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     } catch (err: any) {
       log.error(`Network error: ${err.message ?? 'Unknown error'}`);
       log.warn('Check your internet connection and try again.');
+      log.warn(
+        'Note: credits for any tokens already streamed have been deducted server-side.',
+      );
       process.exit(1);
     }
 
@@ -300,12 +350,20 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     }
 
     // ── Read and process the SSE stream ───────────────────────────────────
-    const { blocks, stopReason, usage } = await readStream(response, round);
+    const { blocks, stopReason, usage, creditInfo } = await readStream(
+      response,
+      round,
+    );
 
     // Accumulate token usage
     if (usage) {
       accumulated.inputTokens += usage.inputTokens;
       accumulated.outputTokens += usage.outputTokens;
+    }
+
+    // Update credit info from server events
+    if (creditInfo) {
+      latestCreditInfo = creditInfo;
     }
 
     // ── Build assistant message and collect tool results ──────────────────
@@ -365,6 +423,10 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     break;
   }
 
+  // ── Clean up exit handlers ────────────────────────────────────────────────
+  process.removeListener('SIGINT', exitHandler);
+  process.removeListener('SIGTERM', exitHandler);
+
   // ── Report usage ──────────────────────────────────────────────────────────
   console.log();
   log.divider();
@@ -375,16 +437,15 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
-  // Credits are deducted server-side — this callback is for CLI-side confirmation
-  if (options.onCreditsUsed) {
-    try {
-      await options.onCreditsUsed(
-        accumulated.inputTokens,
-        accumulated.outputTokens,
-      );
-    } catch (err: any) {
-      log.warn(`Credit confirmation failed: ${err.message ?? 'unknown error'}`);
-    }
+  // Display credit info from server (deducted server-side)
+  if (latestCreditInfo.creditsUsed > 0) {
+    log.info(
+      chalk.dim('Credits used: ') +
+        chalk.white(`${latestCreditInfo.creditsUsed}`),
+    );
+  }
+  if (latestCreditInfo.remainingCredits >= 0) {
+    log.credits(latestCreditInfo.remainingCredits);
   }
 
   log.success(chalk.bold('Generation complete!'));
@@ -420,6 +481,7 @@ interface StreamResult {
   blocks: StreamBlock[];
   stopReason: string;
   usage: { inputTokens: number; outputTokens: number } | null;
+  creditInfo: CreditInfo | null;
 }
 
 async function readStream(
@@ -430,6 +492,7 @@ async function readStream(
   let stopReason = 'end_turn';
   let inputTokens = 0;
   let outputTokens = 0;
+  let creditInfo: CreditInfo | null = null;
 
   const indexToBlock = new Map<number, StreamBlock>();
   let textStarted = false;
@@ -441,7 +504,7 @@ async function readStream(
   const body = response.body;
   if (!body) {
     spinner.stop();
-    return { blocks, stopReason, usage: null };
+    return { blocks, stopReason, usage: null, creditInfo: null };
   }
 
   const decoder = new TextDecoder();
@@ -458,13 +521,46 @@ async function readStream(
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
+      // Track the current SSE event type for multi-line parsing
+      let currentEventType: string | null = null;
+
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed === ':') continue;
+        if (!trimmed || trimmed === ':') {
+          currentEventType = null;
+          continue;
+        }
+
+        // Parse SSE event type field
+        if (trimmed.startsWith('event: ')) {
+          currentEventType = trimmed.slice(7).trim();
+          continue;
+        }
 
         if (trimmed.startsWith('data: ')) {
           const data = trimmed.slice(6).trim();
           if (data === '[DONE]') continue;
+
+          // Handle custom BNA credit events from server
+          if (
+            currentEventType === 'bna_credits' ||
+            currentEventType === 'bna_credits_final'
+          ) {
+            try {
+              const creditData = JSON.parse(data);
+              creditInfo = {
+                creditsUsed: creditData.creditsUsed ?? 0,
+                remainingCredits: creditData.remainingCredits ?? -1,
+              };
+            } catch {
+              // Ignore parse errors on credit events
+            }
+            currentEventType = null;
+            continue;
+          }
+
+          // Reset event type after processing data line
+          currentEventType = null;
 
           let event: SSEEvent;
           try {
@@ -516,6 +612,7 @@ async function readStream(
     blocks,
     stopReason,
     usage: { inputTokens, outputTokens },
+    creditInfo,
   };
 }
 

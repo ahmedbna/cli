@@ -1,10 +1,6 @@
 // src/utils/credits.ts
-//
-// Credits management via Convex HTTP actions.
-// All credit operations go through the Convex site URL — no Remix API routes.
 
 import { store, getAuthToken, CONVEX_SITE_URL } from './store.js';
-import { log } from './logger.js';
 
 export async function checkCredits(): Promise<{
   credits: number;
@@ -55,25 +51,4 @@ export async function checkCredits(): Promise<{
       email: store.get('email'),
     };
   }
-}
-
-/**
- * Credit deduction is now handled server-side in the /cli/chat endpoint.
- * This function exists for backward compatibility but is largely a no-op —
- * credits are deducted atomically by the Convex HTTP action after streaming.
- */
-export async function deductCredits(
-  inputTokens: number,
-  outputTokens: number,
-  _chatInitialId?: string,
-): Promise<void> {
-  if (inputTokens <= 0 && outputTokens <= 0) {
-    return;
-  }
-
-  // Credits are deducted server-side in the /cli/chat proxy.
-  // This callback is for CLI-side logging/confirmation only.
-  log.info(
-    `Server deducted credits for ${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output tokens`,
-  );
 }
