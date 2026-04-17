@@ -99,7 +99,7 @@ export function outputInstructions() {
   - Always write complete file contents — no placeholders
   - Never write empty files
   - Use \`editFile\` for small targeted changes (always \`viewFile\` first)
-  - Use \`createFile\` for new files or major rewrites
+  - Use \`createFile\` for new files or major rewrites, After createFile, NEVER re-createFile the same path — use editFile for changes. createFile is for NEW files only.
   - Use \`readMultipleFiles\` to batch reads for context
 
   ## When Modifying an Existing App (not first generation)
@@ -110,6 +110,11 @@ export function outputInstructions() {
 
   ## Tools
   Never reference tool names in responses (say "we installed X" not "used runCommand tool").
+
+  ## Context Hygiene
+  - Don't re-read files you just wrote.
+  - If you need to modify a file you wrote, use editFile with the specific change.
+  - Don't call listDirectory repeatedly — cache the structure mentally.
 
   ## Locked Files — DO NOT MODIFY
   - \`components/auth/authentication.tsx\` — only style/theme colors

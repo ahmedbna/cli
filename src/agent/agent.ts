@@ -8,14 +8,15 @@
 // awaits the base install and serializes the call. This turns a previously
 // sequential step into a parallel one.
 
-import { generalSystemPrompt } from './prompts.js';
-import { toolDefinitions, executeTool, type ToolName } from './tools.js';
-import { log } from '../utils/logger.js';
-import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
-import { refreshAuthToken } from '../utils/auth.js';
-import type { InstallManager } from '../utils/installManager.js';
-import chalk from 'chalk';
 import ora from 'ora';
+import chalk from 'chalk';
+import { log } from '../utils/logger.js';
+import { generalSystemPrompt } from './prompts.js';
+import { refreshAuthToken } from '../utils/auth.js';
+import { ContextManager } from './contextManager.js';
+import type { InstallManager } from '../utils/installManager.js';
+import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
+import { toolDefinitions, executeTool, type ToolName } from './tools.js';
 
 const MAX_ROUNDS = 30;
 
@@ -188,9 +189,13 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     `6. Only call \`runCommand\` with \`npx expo install <pkg>\` if you need NEW native packages — do this near the end so the base install has time to finish\n` +
     `7. IMPORTANT: As your FINAL step, write an ARCHITECTURE.md file documenting the complete project structure.`;
 
-  const messages: Array<{ role: string; content: any }> = [
-    { role: 'user', content: userMessage },
-  ];
+  const context = new ContextManager({
+    keepRecentRounds: 3,
+    toolResultMaxChars: 400,
+    createFileContentMaxChars: 200,
+    viewDedupWindow: 4,
+  });
+  context.setInitialMessage(userMessage);
 
   log.divider();
   log.info(chalk.bold('Starting BNA Agent (parallel mode)...'));
@@ -241,7 +246,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         CONVEX_SITE_URL,
         authToken,
         systemPrompt,
-        messages,
+        context.getMessages(),
         toolDefinitions,
       );
     } catch (err: any) {
@@ -260,7 +265,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
             CONVEX_SITE_URL,
             authToken,
             systemPrompt,
-            messages,
+            context.getMessages(),
             toolDefinitions,
           );
         } catch (err: any) {
@@ -333,6 +338,20 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
         const toolName = block.name as ToolName;
         let result: string;
+
+        if (toolName === 'viewFile' && block.input.filePath) {
+          const stub = context.getDedupStubForView(block.input.filePath);
+          if (stub) {
+            result = stub;
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: result,
+            });
+            continue;
+          }
+        }
+
         try {
           result = await executeTool(toolCtx, toolName, block.input);
         } catch (err: any) {
@@ -348,10 +367,10 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       }
     }
 
-    messages.push({ role: 'assistant', content: assistantContent });
+    context.addAssistantMessage(assistantContent);
 
     if (toolResults.length > 0) {
-      messages.push({ role: 'user', content: toolResults });
+      context.addToolResults(toolResults);
       continue;
     }
 
@@ -359,12 +378,23 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
     if (stopReason === 'max_tokens') {
       log.warn('Response truncated — continuing...');
-      messages.push({
-        role: 'user',
-        content: 'Please continue where you left off.',
-      });
+      context.addUserText('Please continue where you left off.');
       continue;
     }
+
+    // if (stopReason === 'max_tokens') {
+    //   log.warn('Response truncated — continuing...');
+    //   context.addToolResults([
+    //     {
+    //       type: 'tool_result',
+    //       tool_use_id: 'continuation',
+    //       content: 'Please continue where you left off.',
+    //     },
+    //   ]);
+    //   // Actually, max_tokens means no tool_use — so we need a plain user message.
+    //   // Simpler: push a text user message via a helper, OR skip compaction here.
+    //   continue;
+    // }
 
     break;
   }
