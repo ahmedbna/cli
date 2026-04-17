@@ -1,15 +1,40 @@
 // src/commands/build.ts
+//
+// Parallelized build workflow:
+//
+//   Phase 1: Setup             (sequential, fast)
+//     - Auth validation
+//     - Credit check
+//     - Project name/stack/prompt prompts
+//     - Template copy
+//
+//   Phase 2: Parallel Execution (the big win)
+//     - npm install runs in the background via InstallManager
+//     - AI agent runs concurrently, writing files
+//     - Agent's `runCommand` calls wait for install as needed
+//
+//   Phase 3: Finalization       (sequential, after agent + install both done)
+//     - Convex project init (interactive)
+//     - Convex auth setup (interactive)
+//     - Apply queued environment variables
+//     - Final deploy
+//     - Start dev servers
+//
+// Interrupt handling: SIGINT aborts all in-flight work cleanly. Partial state
+// is preserved — the scaffolded project and any generated files remain on disk.
 
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import { execSync, spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { log } from '../utils/logger.js';
 import { ensureValidAuth, revalidateAuth } from '../utils/auth.js';
 import { checkCredits } from '../utils/credits.js';
 import { runAgent } from '../agent/agent.js';
+import { InstallManager } from '../utils/installManager.js';
+import { getPendingEnvVars, clearPendingEnvVars } from '../agent/tools.js';
 
 interface GenerateOptions {
   prompt?: string;
@@ -20,9 +45,8 @@ interface GenerateOptions {
   skills?: string;
 }
 
-/**
- * Recursively copy a directory, skipping node_modules, .git, _generated
- */
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
 function copyTemplateDir(src: string, dest: string): void {
   const SKIP = new Set([
     'node_modules',
@@ -32,29 +56,17 @@ function copyTemplateDir(src: string, dest: string): void {
     'ios',
     'android',
   ]);
-
-  if (!fs.existsSync(dest)) {
-    fs.mkdirSync(dest, { recursive: true });
-  }
-
+  if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
     if (SKIP.has(entry.name)) continue;
-
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
-
-    if (entry.isDirectory()) {
-      copyTemplateDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
+    if (entry.isDirectory()) copyTemplateDir(srcPath, destPath);
+    else fs.copyFileSync(srcPath, destPath);
   }
 }
 
-/**
- * Resolve the template directory. Works both in development and when installed as a package.
- */
 function resolveTemplateDir(stack: string): string {
   let dir = path.dirname(new URL(import.meta.url).pathname);
   for (let i = 0; i < 5; i++) {
@@ -62,14 +74,9 @@ function resolveTemplateDir(stack: string): string {
     if (fs.existsSync(candidate)) return candidate;
     dir = path.dirname(dir);
   }
-
   const cwdCandidate = path.join(process.cwd(), 'templates', stack);
   if (fs.existsSync(cwdCandidate)) return cwdCandidate;
-
-  throw new Error(
-    `Template directory not found for stack "${stack}". ` +
-      `Expected at <package>/templates/${stack}/`,
-  );
+  throw new Error(`Template directory not found for stack "${stack}".`);
 }
 
 function isMacOS(): boolean {
@@ -90,41 +97,17 @@ function runInteractive(command: string, cwd: string): boolean {
   }
 }
 
-/**
- * Parse --skills flag into Agent Skills config.
- * Supports Anthropic pre-built skills (pptx, xlsx, docx, pdf) and custom skill IDs.
- */
-function parseSkills(
-  skillsFlag?: string,
-): Array<{ type: 'anthropic' | 'custom'; skill_id: string; version: string }> {
-  if (!skillsFlag) return [];
-
-  const ANTHROPIC_SKILLS = new Set(['pptx', 'xlsx', 'docx', 'pdf']);
-
-  return skillsFlag
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((skillId) => ({
-      type: ANTHROPIC_SKILLS.has(skillId)
-        ? ('anthropic' as const)
-        : ('custom' as const),
-      skill_id: skillId,
-      version: 'latest',
-    }));
-}
+// ─── Main command ────────────────────────────────────────────────────────────
 
 export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.banner();
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 1: Validate authentication FIRST (before ANY expensive operations)
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════════════════════
+  // Phase 1: Setup — fast, sequential, no heavy I/O
+  // ════════════════════════════════════════════════════════════════════════
+
   await ensureValidAuth();
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 2: Check credits
-  // ═══════════════════════════════════════════════════════════════════════════
   log.info('Checking credits...');
   const { credits, hasEnough } = await checkCredits();
 
@@ -135,14 +118,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     );
     return;
   }
-
-  if (credits >= 0) {
-    log.credits(credits);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 3: Gather project info (interactive prompts — no network needed)
-  // ═══════════════════════════════════════════════════════════════════════════
+  if (credits >= 0) log.credits(credits);
 
   const cwd = process.cwd();
   const dirContents = fs.readdirSync(cwd);
@@ -177,11 +153,9 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
 
   let stack: 'expo' | 'expo-convex';
-  if (options.stack === 'expo') {
-    stack = 'expo';
-  } else if (options.stack === 'expo-convex') {
-    stack = 'expo-convex';
-  } else {
+  if (options.stack === 'expo') stack = 'expo';
+  else if (options.stack === 'expo-convex') stack = 'expo-convex';
+  else {
     const stackAnswer = await inquirer.prompt([
       {
         type: 'list',
@@ -204,9 +178,8 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
 
   let prompt: string;
-  if (options.prompt) {
-    prompt = options.prompt;
-  } else {
+  if (options.prompt) prompt = options.prompt;
+  else {
     const promptAnswer = await inquirer.prompt([
       {
         type: 'input',
@@ -219,9 +192,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     prompt = promptAnswer.prompt;
   }
 
-  // Parse skills from --skills flag
-  const skills = parseSkills(options.skills);
-
   console.log();
   log.info(`Project: ${chalk.cyan(projectName)}`);
   log.info(`Stack:   ${chalk.cyan(stack)}`);
@@ -229,25 +199,15 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     `Prompt:  ${chalk.cyan(prompt.length > 80 ? prompt.slice(0, 80) + '...' : prompt)}`,
   );
   log.info(`Path:    ${chalk.dim(projectRoot)}`);
-  if (skills.length > 0) {
-    log.info(
-      `Skills:  ${chalk.cyan(skills.map((s) => s.skill_id).join(', '))} ${chalk.dim('(Anthropic Agent Skills API)')}`,
-    );
-  }
   console.log();
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 4: Scaffold project
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  log.info('Initializing the app');
+  // ── Copy template (fast — ~2s) ─────────────────────────────────────────
+  log.info('Initializing the app...');
   try {
     const templateDir = resolveTemplateDir(stack);
-
     if (!fs.existsSync(projectRoot)) {
       fs.mkdirSync(projectRoot, { recursive: true });
     }
-
     copyTemplateDir(templateDir, projectRoot);
     log.success(`App initialized at: ${chalk.cyan(projectRoot)}`);
   } catch (err: any) {
@@ -255,39 +215,144 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     process.exit(1);
   }
 
-  log.info('Installing dependencies...');
-  try {
-    execSync('npm install', {
-      cwd: projectRoot,
-      stdio: 'inherit',
-      env: { ...process.env, FORCE_COLOR: '1' },
-    });
-    log.success('Dependencies installed.');
-  } catch {
-    log.error('npm install failed. Trying with --legacy-peer-deps...');
-    try {
-      execSync('npm install --legacy-peer-deps', {
-        cwd: projectRoot,
-        stdio: 'inherit',
-        env: { ...process.env, FORCE_COLOR: '1' },
-      });
-      log.success('Dependencies installed (with --legacy-peer-deps).');
-    } catch {
-      log.error(
-        'Failed to install dependencies. You may need to install them manually.',
-      );
-      process.exit(1);
-    }
+  // ════════════════════════════════════════════════════════════════════════
+  // Phase 2: PARALLEL — npm install runs concurrently with the AI agent
+  // ════════════════════════════════════════════════════════════════════════
+
+  const installManager = new InstallManager(projectRoot);
+
+  // If the user passed --no-install, skip the background install entirely.
+  // This is mainly useful for testing or when the user wants to inspect the
+  // scaffolded project before dependencies resolve. Agent can still run —
+  // any `runCommand` with npm/npx will fail with a clear error.
+  const skipInstall = options.install === false;
+  const skipRun = options.run === false;
+
+  // Register a SIGINT handler for the parallel phase. This fires BEFORE the
+  // agent's own handler (agent registers later), so we need it to do full
+  // cleanup: abort install, then exit. Once the agent registers its handler
+  // we remove this one to avoid double-exit logic.
+  let parallelSigintActive = true;
+  const parallelSigint = () => {
+    if (!parallelSigintActive) return;
+    parallelSigintActive = false;
+    console.log();
+    log.warn('Interrupted. Aborting background install...');
+    installManager.abort();
+    log.info(
+      'Your scaffolded project is preserved at ' + chalk.cyan(projectRoot),
+    );
+    process.exit(130); // 128 + SIGINT(2)
+  };
+  process.on('SIGINT', parallelSigint);
+  process.on('SIGTERM', parallelSigint);
+
+  log.divider();
+  log.info(chalk.bold('Starting parallel phase'));
+  log.info(chalk.dim('  • npm install — running in background'));
+  log.info(chalk.dim('  • AI agent    — starting now'));
+  log.divider();
+
+  // Kick off the background install FIRST so it has a head start while
+  // the agent boots up and makes its first network round trip.
+  // Honor --no-install for debug/test scenarios.
+  if (skipInstall) {
+    log.warn(
+      '--no-install: skipping background npm install. ' +
+        'Any `npx expo install` from the agent will fail.',
+    );
+  } else {
+    installManager.startBaseInstall();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 5: Initialize Convex (if expo-convex)
-  // ═══════════════════════════════════════════════════════════════════════════
+  // Start the agent. The agent registers its OWN SIGINT handler on entry;
+  // we deactivate ours so we don't double-exit. We still keep it registered
+  // in case the agent exits abnormally without removing its listener.
+  const freshToken = await revalidateAuth();
+
+  // Hand off signal responsibility to the agent: it will handle cleanup
+  // and exit. We mark ours inactive so it becomes a no-op but stays
+  // registered as a safety net.
+  parallelSigintActive = false;
+
+  try {
+    await runAgent({
+      projectRoot,
+      prompt,
+      stack,
+      authToken: freshToken,
+      installManager,
+    });
+  } catch (err: any) {
+    installManager.abort();
+    process.removeListener('SIGINT', parallelSigint);
+    process.removeListener('SIGTERM', parallelSigint);
+    log.error(`Agent failed: ${err.message ?? 'unknown error'}`);
+    log.warn(
+      'Your scaffolded project is preserved at ' + chalk.cyan(projectRoot),
+    );
+    process.exit(1);
+  }
+
+  // Agent finished cleanly — reactivate our handler to cover Phase 3.
+  parallelSigintActive = true;
+
+  // ── Synchronization point: wait for the background install to finish ───
+  // By the time the agent finishes, the install has usually already completed
+  // (it's only ~45s vs ~2-4 min of generation). But we still await to be safe.
+  if (!skipInstall) {
+    log.info('Ensuring dependencies finished installing...');
+    const installResult = await installManager.awaitBaseInstall();
+    installManager.printReadyBanner();
+
+    if (!installResult.ok) {
+      log.warn(
+        'Base npm install failed. You can retry manually with:\n' +
+          '  ' +
+          chalk.cyan(`cd ${projectRoot} && npm install --legacy-peer-deps`),
+      );
+      const { continueAnyway } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'continueAnyway',
+          message: 'Continue with Convex setup anyway?',
+          default: false,
+        },
+      ]);
+      if (!continueAnyway) {
+        log.info(
+          'Exiting. Fix the install issue, then run ' +
+            chalk.cyan('bna build') +
+            ' again in the project directory.',
+        );
+        return;
+      }
+    }
+  } else {
+    log.warn(
+      '--no-install was set. Run ' +
+        chalk.cyan(`cd ${projectRoot} && npm install`) +
+        ' before starting dev servers.',
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Phase 3: Finalization — deferred Convex setup + env vars + dev servers
+  // ════════════════════════════════════════════════════════════════════════
 
   if (stack === 'expo-convex') {
     console.log();
     log.divider();
-    log.info(chalk.bold('Step 1/2 — Setting up Convex backend'));
+    log.info(chalk.bold('Finalizing — Convex setup'));
+    log.info(
+      chalk.dim(
+        'Code generation is complete. Now we set up the Convex backend and auth.',
+      ),
+    );
+    log.divider();
+
+    console.log();
+    log.info(chalk.bold('Step 1/3 — Initialize Convex project'));
     log.info(
       chalk.dim(
         'Select your team, enter a project name, and choose deployment type.',
@@ -299,10 +364,9 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
 
     if (!convexInitOk) {
       log.warn(
-        'Convex initialization did not complete successfully.\n' +
-          `  You can retry with ${chalk.cyan('npx convex dev --once')} in the project directory.`,
+        'Convex initialization did not complete.\n' +
+          `  You can retry with ${chalk.cyan('npx convex dev --once')} later.`,
       );
-
       const { continueAnyway } = await inquirer.prompt([
         {
           type: 'confirm',
@@ -311,127 +375,157 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
           default: false,
         },
       ]);
-
-      if (!continueAnyway) {
-        log.info(
-          'Exiting. Fix the issue, then run `bna build` again in the project directory.',
-        );
-        return;
-      }
+      if (!continueAnyway) return;
     } else {
-      log.success('Convex backend initialized and deployed.');
+      log.success('Convex project initialized.');
     }
 
     console.log();
-    log.divider();
-    log.info(chalk.bold('Step 2/2 — Setting up Convex Auth'));
+    log.info(chalk.bold('Step 2/3 — Configure Convex Auth'));
     log.info(
-      chalk.dim(
-        'This configures JWT keys and validates your auth setup. Follow the prompts.',
-      ),
+      chalk.dim('This configures JWT keys and validates your auth setup.'),
     );
     console.log();
 
     const authInitOk = runInteractive('npx @convex-dev/auth', projectRoot);
-
     if (!authInitOk) {
       log.warn(
-        'Convex Auth setup did not complete successfully.\n' +
+        'Convex Auth setup did not complete.\n' +
           `  You can run ${chalk.cyan('npx @convex-dev/auth')} manually later.`,
       );
     } else {
       log.success('Convex Auth configured.');
     }
 
-    console.log();
-    log.info('Deploying backend with auth configuration...');
-    const redeployOk = runInteractive('npx convex dev --once', projectRoot);
-    if (redeployOk) {
-      log.success('Backend deployed with auth.');
-    } else {
-      log.warn(
-        'Redeploy after auth setup failed — the AI agent can still proceed.',
+    // ── Apply queued environment variables ──────────────────────────────
+    const pendingEnvs = getPendingEnvVars();
+    if (pendingEnvs.length > 0) {
+      console.log();
+      log.info(chalk.bold('Step 3/3 — Environment variables'));
+      log.info(
+        chalk.dim(
+          'The agent requested the following environment variables for this app:',
+        ),
       );
+      for (const name of pendingEnvs) {
+        log.info('  • ' + chalk.yellow(name));
+      }
+      console.log();
+      log.info(
+        'For each one, either:\n' +
+          `  1. Set it in the Convex dashboard → ${chalk.cyan('Settings → Environment Variables')}\n` +
+          `  2. Or run: ${chalk.cyan(`npx convex env set <NAME> <value>`)}\n`,
+      );
+
+      const { setNow } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'setNow',
+          message: 'Would you like to set these now interactively?',
+          default: true,
+        },
+      ]);
+
+      if (setNow) {
+        for (const name of pendingEnvs) {
+          const { value } = await inquirer.prompt([
+            {
+              type: 'password',
+              name: 'value',
+              message: `Value for ${chalk.yellow(name)} (leave blank to skip):`,
+              mask: '*',
+            },
+          ]);
+          if (value && value.trim().length > 0) {
+            const cmd = `npx convex env set ${name} "${value.replace(/"/g, '\\"')}"`;
+            const ok = runInteractive(cmd, projectRoot);
+            if (ok) log.success(`Set ${name}`);
+            else log.warn(`Failed to set ${name} — set it manually later`);
+          } else {
+            log.info(
+              chalk.dim(`Skipped ${name} — remember to set it before use`),
+            );
+          }
+        }
+      }
+      clearPendingEnvVars();
     }
-  }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 6: Re-validate and REFRESH auth before the agent
-  // npm install + convex setup can take 5+ minutes — token may have expired.
-  // revalidateAuth() attempts token refresh and returns a FRESH token.
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  log.info('Re-verifying authentication before AI agent...');
-  const freshToken = await revalidateAuth();
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 7: Run the AI agent with the FRESH token
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  console.log();
-  log.divider();
-  log.info(chalk.bold('Starting AI Agent...'));
-  log.info(
-    chalk.dim('The agent will customize your app based on the description.'),
-  );
-  log.info(chalk.dim('Every file action will be displayed in this terminal.'));
-  if (skills.length > 0) {
-    log.info(
-      chalk.dim(
-        `Using Anthropic Agent Skills: ${skills.map((s) => s.skill_id).join(', ')}`,
-      ),
-    );
-  }
-  console.log();
-
-  const chatInitialId = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-  await runAgent({
-    projectRoot,
-    prompt,
-    stack,
-    authToken: freshToken,
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 8: Post-agent deployment + dev server start
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  if (stack === 'expo-convex') {
+    // ── Final deploy: includes everything the agent wrote + any env vars ─
     console.log();
-    log.divider();
-    log.info('Deploying AI-generated changes to Convex...');
-
+    log.info('Deploying final state to Convex...');
     const finalDeployOk = runInteractive('npx convex dev --once', projectRoot);
-    if (finalDeployOk) {
-      log.success('Backend deployed with AI-generated changes.');
-    } else {
+    if (finalDeployOk) log.success('Backend deployed.');
+    else {
       log.warn(
-        'Deploy failed. You may need to fix schema errors and run ' +
+        'Final deploy failed. You may need to fix schema errors and run ' +
           chalk.cyan('npx convex dev') +
           ' manually.',
       );
     }
+  } else {
+    // Stack is 'expo' only — no Convex work. Still respect queued env vars
+    // by informing the user.
+    const pendingEnvs = getPendingEnvVars();
+    if (pendingEnvs.length > 0) {
+      console.log();
+      log.info(
+        'The agent requested environment variables: ' +
+          pendingEnvs.map((n) => chalk.yellow(n)).join(', '),
+      );
+      log.info(
+        chalk.dim(
+          '  Add these to your Expo app via app.json `extra` or a .env file as appropriate.',
+        ),
+      );
+      clearPendingEnvVars();
+    }
+  }
+
+  // ── Deactivate SIGINT handler — all critical work is done ──────────────
+  parallelSigintActive = false;
+  process.removeListener('SIGINT', parallelSigint);
+  process.removeListener('SIGTERM', parallelSigint);
+
+  // ── Start dev servers ─────────────────────────────────────────────────
+  const expoCommand = isMacOS() ? 'npx expo run:ios' : 'npx expo run:android';
+  const platform = isMacOS() ? 'iOS' : 'Android';
+
+  if (skipRun) {
+    console.log();
+    log.divider();
+    log.success(chalk.bold('Your app is ready!'));
+    log.info(chalk.dim('--no-run: skipping dev server launch.'));
+    console.log();
+
+    if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
+    if (stack === 'expo-convex') {
+      log.info(
+        '  npx convex dev          ' + chalk.dim('# Start Convex backend'),
+      );
+    }
+    log.info(
+      `  ${expoCommand}    ` + chalk.dim(`# Start ${platform} dev build`),
+    );
+    console.log();
+    return;
   }
 
   if (stack === 'expo-convex') {
     console.log();
     log.info('Starting Convex dev server (background)...');
-    const convexProc = spawn('npx', ['convex', 'dev'], {
+    const convexDevProc = spawn('npx', ['convex', 'dev'], {
       cwd: projectRoot,
       stdio: 'ignore',
       detached: true,
       env: { ...process.env, FORCE_COLOR: '1' },
       shell: true,
     });
-    convexProc.unref();
+    convexDevProc.unref();
     log.success('Convex dev server running in background.');
   }
 
   console.log();
-  const expoCommand = isMacOS() ? 'npx expo run:ios' : 'npx expo run:android';
-  const platform = isMacOS() ? 'iOS' : 'Android';
-
   log.info(`Starting Expo dev build for ${chalk.cyan(platform)}...`);
   log.info(chalk.dim(`Running: ${expoCommand}`));
   console.log();
@@ -444,9 +538,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   });
 
   expoProc.on('close', (code) => {
-    if (code !== 0) {
-      log.warn(`Expo exited with code ${code}.`);
-    }
+    if (code !== 0) log.warn(`Expo exited with code ${code}.`);
   });
 
   console.log();
@@ -454,10 +546,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.success(chalk.bold('Your app is ready!'));
   console.log();
 
-  if (projectRoot !== cwd) {
-    log.info(`  cd ${projectName}`);
-  }
-
+  if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
   if (stack === 'expo-convex') {
     log.info(
       '  npx convex dev          ' +

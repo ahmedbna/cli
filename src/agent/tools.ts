@@ -1,9 +1,13 @@
 // src/agent/tools.ts
+//
 // Tool definitions and executors for the CLI agent.
 //
-// The lookupDocs tool now takes a single skill name (e.g. "convex-file-storage")
-// instead of the old skill + topics pattern. Each skill is self-contained —
-// one SKILL.md per feature, loaded in full when requested.
+// Parallelism change:
+//   - `runCommand` now routes npm/npx/yarn/pnpm commands through the
+//     InstallManager so they're serialized behind the base `npm install`
+//     and behind each other. This lets the agent run in parallel with
+//     dependency installation without creating lockfile conflicts.
+//   - All other tools (filesystem, docs) remain synchronous.
 
 import fs from 'fs';
 import path from 'path';
@@ -11,8 +15,17 @@ import { execSync } from 'child_process';
 import chalk, { type ChalkInstance } from 'chalk';
 import { z } from 'zod';
 import { readSkill, readSkills, getSkillNames } from './skills.js';
+import type { InstallManager } from '../utils/installManager.js';
 
-// ─── Zod Schemas (single source of truth) ────────────────────────────────────
+// ─── Execution context ───────────────────────────────────────────────────────
+// Passed into executeTool so tools can access shared runtime state.
+
+export interface ToolContext {
+  projectRoot: string;
+  installManager: InstallManager;
+}
+
+// ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
 export const CreateFileSchema = z.object({
   filePath: z
@@ -42,66 +55,39 @@ export const RunCommandSchema = z.object({
   timeout: z
     .number()
     .optional()
-    .describe('Timeout in milliseconds (default 120000)'),
+    .describe('Timeout in milliseconds (default 180000)'),
 });
 
 export const ViewFileSchema = z.object({
   filePath: z.string().describe('Relative path to the file to read'),
-  startLine: z
-    .number()
-    .optional()
-    .describe('Optional start line (1-indexed). Omit to read entire file.'),
-  endLine: z
-    .number()
-    .optional()
-    .describe(
-      'Optional end line (1-indexed, inclusive). Use -1 for end of file.',
-    ),
+  startLine: z.number().optional(),
+  endLine: z.number().optional(),
 });
 
 export const ListDirectorySchema = z.object({
-  dirPath: z
-    .string()
-    .optional()
-    .describe('Relative directory path (default ".")'),
-  recursive: z
-    .boolean()
-    .optional()
-    .describe('If true, list up to 2 levels deep (default false)'),
+  dirPath: z.string().optional(),
+  recursive: z.boolean().optional(),
 });
 
 export const DeleteFileSchema = z.object({
-  filePath: z
-    .string()
-    .describe('Relative path to the file or directory to delete'),
+  filePath: z.string(),
 });
 
 export const RenameFileSchema = z.object({
-  oldPath: z.string().describe('Current relative path of the file'),
-  newPath: z.string().describe('New relative path for the file'),
+  oldPath: z.string(),
+  newPath: z.string(),
 });
 
 export const SearchFilesSchema = z.object({
-  pattern: z.string().describe('Text or regex pattern to search for'),
-  fileGlob: z
-    .string()
-    .optional()
-    .describe(
-      'Optional file glob to restrict search (e.g. "*.tsx", "convex/*.ts"). Default: all files.',
-    ),
-  maxResults: z
-    .number()
-    .optional()
-    .describe('Maximum number of results to return (default 20)'),
+  pattern: z.string(),
+  fileGlob: z.string().optional(),
+  maxResults: z.number().optional(),
 });
 
 export const ReadMultipleFilesSchema = z.object({
-  filePaths: z
-    .array(z.string())
-    .describe('Array of relative file paths to read'),
+  filePaths: z.array(z.string()),
 });
 
-// Build the skill names dynamically at import time
 const skillNames = getSkillNames();
 
 export const LookupDocsSchema = z.object({
@@ -110,19 +96,17 @@ export const LookupDocsSchema = z.object({
     .min(1)
     .max(4)
     .describe(
-      `One or more skill names to load. Each skill is a self-contained reference doc. ` +
-        `Available: ${skillNames.join(', ')}. ` +
+      `One or more skill names to load. Available: ${skillNames.join(', ')}. ` +
         `Load only what you need — each skill consumes context tokens.`,
     ),
 });
 
 export const AddEnvironmentVariablesSchema = z.object({
-  envVarNames: z
-    .array(z.string())
-    .describe(
-      'List of environment variable names to add (e.g. ["OPENAI_API_KEY", "STRIPE_SECRET_KEY"])',
-    ),
+  envVarNames: z.array(z.string()),
 });
+
+// New tool — lets the agent explicitly check install state when it matters.
+export const CheckDependenciesSchema = z.object({});
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
@@ -137,7 +121,8 @@ export type ToolName =
   | 'searchFiles'
   | 'readMultipleFiles'
   | 'lookupDocs'
-  | 'addEnvironmentVariables';
+  | 'addEnvironmentVariables'
+  | 'checkDependencies';
 
 // ─── Tool Definitions (sent to Anthropic API) ────────────────────────────────
 
@@ -150,66 +135,74 @@ function toolDef(name: string, description: string, schema: z.ZodType) {
 export const toolDefinitions = [
   toolDef(
     'createFile',
-    'Create or overwrite a file on the local file system. The filePath is relative to the current project root. Always write the complete file content — no placeholders or "rest unchanged" comments.',
+    'Create or overwrite a file on the local file system. This tool works IMMEDIATELY — it does not depend on npm packages being installed. Always write the complete file content.',
     CreateFileSchema,
   ),
   toolDef(
     'editFile',
-    'Replace a unique string in a file with new content. Use for targeted edits like bug fixes, adding imports, or modifying specific functions. The `oldText` must match exactly and appear only once in the file. Always use `viewFile` first to know current contents.',
+    'Replace a unique string in a file with new content. Works immediately — does not depend on npm packages.',
     EditFileSchema,
   ),
   toolDef(
     'runCommand',
-    'Execute a shell command in the project directory. Use ONLY for: `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr. Long-running commands time out at 120s.',
+    'Execute a shell command. Dependency installs (npm/npx/yarn/pnpm) are automatically serialized behind the base `npm install` running in the background, so it is safe to call these at any time — they will just wait if needed. Use ONLY for `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr.',
     RunCommandSchema,
   ),
   toolDef(
     'viewFile',
-    'Read the contents of a file. Use before editing to know current state. Returns numbered lines.',
+    'Read the contents of a file. Returns numbered lines. Works immediately.',
     ViewFileSchema,
   ),
   toolDef(
     'listDirectory',
-    'List files and directories at the given path. Returns names with (dir) or (file) markers. Filters out node_modules, .git, .expo, _generated.',
+    'List files and directories. Filters node_modules, .git, .expo, _generated.',
     ListDirectorySchema,
   ),
-  toolDef(
-    'deleteFile',
-    'Delete a file or an empty directory from the file system.',
-    DeleteFileSchema,
-  ),
-  toolDef(
-    'renameFile',
-    'Rename or move a file from one path to another.',
-    RenameFileSchema,
-  ),
+  toolDef('deleteFile', 'Delete a file or empty directory.', DeleteFileSchema),
+  toolDef('renameFile', 'Rename or move a file.', RenameFileSchema),
   toolDef(
     'searchFiles',
-    'Search for a text pattern across project files. Returns matching file paths and line numbers. Useful for finding usages, imports, or specific code patterns.',
+    'Search for a text pattern across project files. Returns matching paths and line numbers.',
     SearchFilesSchema,
   ),
   toolDef(
     'readMultipleFiles',
-    'Read the contents of multiple files at once. More efficient than calling viewFile multiple times. Returns an object mapping each path to its content.',
+    'Read multiple files at once. More efficient than multiple viewFile calls.',
     ReadMultipleFilesSchema,
   ),
   toolDef(
     'lookupDocs',
-    'Load reference documentation for specific features BEFORE implementing them. ' +
-      'Each skill is a self-contained doc covering one feature. Load only what you need to save context. ' +
-      'Available skills: ' +
-      skillNames.join(', ') +
-      '.',
+    'Load reference documentation for specific features. Available skills: ' +
+      skillNames.join(', '),
     LookupDocsSchema,
   ),
   toolDef(
     'addEnvironmentVariables',
-    'Instruct the user to add environment variables to their Convex deployment. Use this when the app requires API keys or secrets (e.g. OPENAI_API_KEY, STRIPE_SECRET_KEY). The tool returns instructions for the user to set these variables via the Convex dashboard or CLI.',
+    'Queue environment variables to be set on the Convex deployment. These will be applied at the end of the run during the Convex setup phase. Use this for API keys and secrets like OPENAI_API_KEY or STRIPE_SECRET_KEY.',
     AddEnvironmentVariablesSchema,
+  ),
+  toolDef(
+    'checkDependencies',
+    'Check whether the background `npm install` has completed. Returns the current status. You rarely need this — just call runCommand when you need to install a new package, and it will wait automatically.',
+    CheckDependenciesSchema,
   ),
 ];
 
-// ─── Shimmer animation for action labels ─────────────────────────────────────
+// ─── Queued environment variables (processed post-agent) ─────────────────────
+// The agent accumulates env var requests here; the command layer reads them
+// after the agent finishes to display instructions during Convex setup.
+
+const pendingEnvVars = new Set<string>();
+
+export function getPendingEnvVars(): string[] {
+  return Array.from(pendingEnvVars).sort();
+}
+
+export function clearPendingEnvVars(): void {
+  pendingEnvVars.clear();
+}
+
+// ─── Shimmer animation ───────────────────────────────────────────────────────
 
 const SHIMMER_FRAMES = ['░', '▒', '▓', '█', '▓', '▒'];
 
@@ -233,12 +226,20 @@ function shimmerText(text: string, color: ChalkInstance): void {
   const waitMs = totalFrames * 60 + 20;
   const start = Date.now();
   while (Date.now() - start < waitMs) {
-    // busy-wait to keep the animation visible
+    /* busy-wait to keep the animation visible */
   }
 }
 
 function showActionLabel(
-  action: 'create' | 'update' | 'delete' | 'rename' | 'run' | 'docs' | 'env',
+  action:
+    | 'create'
+    | 'update'
+    | 'delete'
+    | 'rename'
+    | 'run'
+    | 'docs'
+    | 'env'
+    | 'queue',
   filePath: string,
   lines?: number,
 ): void {
@@ -249,7 +250,8 @@ function showActionLabel(
     rename: { verb: 'Moving', color: chalk.blue },
     run: { verb: 'Running', color: chalk.magenta },
     docs: { verb: 'Loading skill', color: chalk.cyan },
-    env: { verb: 'Environment', color: chalk.hex('#f59e0b') },
+    env: { verb: 'Queued env var', color: chalk.hex('#f59e0b') },
+    queue: { verb: 'Queued (deps)', color: chalk.dim },
   };
 
   const { verb, color } = labels[action];
@@ -267,14 +269,12 @@ export function executeCreateFile(
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   const dir = path.dirname(fullPath);
-
   fs.mkdirSync(dir, { recursive: true });
 
   const existed = fs.existsSync(fullPath);
   fs.writeFileSync(fullPath, args.content, 'utf-8');
 
   const lines = args.content.split('\n').length;
-
   showActionLabel(existed ? 'update' : 'create', args.filePath, lines);
 
   return `Successfully ${existed ? 'updated' : 'created'} ${args.filePath} (${lines} lines)`;
@@ -285,7 +285,6 @@ export function executeEditFile(
   args: z.infer<typeof EditFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
-
   if (!fs.existsSync(fullPath)) {
     return `Error: File not found: ${args.filePath}`;
   }
@@ -296,9 +295,8 @@ export function executeEditFile(
   if (occurrences === 0) {
     return `Error: The specified text was not found in ${args.filePath}. Use viewFile to check current contents.`;
   }
-
   if (occurrences > 1) {
-    return `Error: The specified text appears ${occurrences} times in ${args.filePath}. It must be unique. Use a larger or more specific text fragment.`;
+    return `Error: The specified text appears ${occurrences} times in ${args.filePath}. It must be unique.`;
   }
 
   const newContent = content.replace(args.oldText, args.newText);
@@ -310,25 +308,84 @@ export function executeEditFile(
   if (oldLines !== newLines) {
     console.log(chalk.dim(`    ${oldLines} lines → ${newLines} lines`));
   }
-
   return `Successfully edited ${args.filePath}`;
 }
 
-export function executeRunCommand(
-  projectRoot: string,
+// ─── runCommand — routed through InstallManager for npm-family commands ─────
+
+function isNpmFamily(cmd: string): boolean {
+  const trimmed = cmd.trim();
+  return /^(npm|npx|yarn|pnpm|bun(?:x)?)\b/.test(trimmed);
+}
+
+export async function executeRunCommand(
+  ctx: ToolContext,
   args: z.infer<typeof RunCommandSchema>,
-): string {
+): Promise<string> {
+  const timeoutMs = args.timeout ?? 180_000;
+
+  // Route npm-family commands through the install manager.
+  // This gives us:
+  //   1. Automatic wait behind the background `npm install`
+  //   2. Serialization so we don't mutate node_modules concurrently
+  if (isNpmFamily(args.command)) {
+    const status = ctx.installManager.getStatus();
+
+    if (status === 'installing' || status === 'pending') {
+      showActionLabel('queue', args.command);
+      console.log(
+        chalk.dim('    Waiting for base dependencies to finish installing...'),
+      );
+    } else {
+      showActionLabel('run', args.command);
+    }
+
+    const result = await ctx.installManager.runDependentCommand(
+      args.command,
+      timeoutMs,
+    );
+
+    // Surface a truncated view in the terminal
+    if (result.output) {
+      const lines = result.output.split('\n');
+      if (lines.length > 10) {
+        for (const line of lines.slice(0, 3)) {
+          console.log(chalk.dim('    ') + chalk.dim(line));
+        }
+        console.log(chalk.dim(`    ... ${lines.length - 5} more lines ...`));
+        for (const line of lines.slice(-2)) {
+          console.log(chalk.dim('    ') + chalk.dim(line));
+        }
+      } else {
+        for (const line of lines) {
+          console.log(chalk.dim('    ') + chalk.dim(line));
+        }
+      }
+    }
+
+    const truncated =
+      result.output.length > 4000
+        ? result.output.slice(0, 2000) +
+          '\n...(truncated)...\n' +
+          result.output.slice(-2000)
+        : result.output;
+
+    return result.ok
+      ? truncated || '(command completed)'
+      : `Error: ${truncated}`;
+  }
+
+  // Non-npm commands — run synchronously via execSync (original behaviour).
   showActionLabel('run', args.command);
   try {
     const output = execSync(args.command, {
-      cwd: projectRoot,
-      timeout: args.timeout ?? 120_000,
+      cwd: ctx.projectRoot,
+      timeout: timeoutMs,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, FORCE_COLOR: '0' },
     });
     const trimmed = output.trim();
-
     if (trimmed) {
       const lines = trimmed.split('\n');
       if (lines.length > 10) {
@@ -345,7 +402,6 @@ export function executeRunCommand(
         }
       }
     }
-
     return trimmed.length > 4000
       ? trimmed.slice(0, 2000) + '\n...(truncated)...\n' + trimmed.slice(-2000)
       : trimmed || '(command completed with no output)';
@@ -353,14 +409,12 @@ export function executeRunCommand(
     const stderr = err.stderr?.toString() ?? '';
     const stdout = err.stdout?.toString() ?? '';
     const combined = (stdout + '\n' + stderr).trim();
-
     if (combined) {
       const lines = combined.split('\n').slice(-5);
       for (const line of lines) {
         console.log(chalk.red('    ') + line);
       }
     }
-
     return `Error (exit ${err.status ?? '?'}): ${combined.slice(0, 4000)}`;
   }
 }
@@ -370,21 +424,18 @@ export function executeViewFile(
   args: z.infer<typeof ViewFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
-  if (!fs.existsSync(fullPath)) {
+  if (!fs.existsSync(fullPath))
     return `Error: File not found: ${args.filePath}`;
-  }
   const stat = fs.statSync(fullPath);
   if (stat.isDirectory()) {
     return `Error: ${args.filePath} is a directory, use listDirectory instead`;
   }
   const content = fs.readFileSync(fullPath, 'utf-8');
   const lines = content.split('\n');
-
   const start = (args.startLine ?? 1) - 1;
   const end =
     args.endLine === -1 ? lines.length : (args.endLine ?? lines.length);
   const slice = lines.slice(Math.max(0, start), end);
-
   return slice.map((line, i) => `${start + i + 1}: ${line}`).join('\n');
 }
 
@@ -411,7 +462,6 @@ export function executeListDirectory(
     const filtered = entries.filter((e) => !SKIP.has(e.name));
     const lines: string[] = [];
     const indent = '  '.repeat(depth);
-
     for (const e of filtered) {
       const marker = e.isDirectory() ? '(dir)' : '(file)';
       lines.push(`${indent}- ${e.name} ${marker}`);
@@ -432,17 +482,11 @@ export function executeDeleteFile(
   args: z.infer<typeof DeleteFileSchema>,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
-  if (!fs.existsSync(fullPath)) {
+  if (!fs.existsSync(fullPath))
     return `Error: File not found: ${args.filePath}`;
-  }
-
   const stat = fs.statSync(fullPath);
-  if (stat.isDirectory()) {
-    fs.rmdirSync(fullPath);
-  } else {
-    fs.unlinkSync(fullPath);
-  }
-
+  if (stat.isDirectory()) fs.rmdirSync(fullPath);
+  else fs.unlinkSync(fullPath);
   showActionLabel('delete', args.filePath);
   return `Successfully deleted ${args.filePath}`;
 }
@@ -453,14 +497,11 @@ export function executeRenameFile(
 ): string {
   const srcFull = path.resolve(projectRoot, args.oldPath);
   const destFull = path.resolve(projectRoot, args.newPath);
-
   if (!fs.existsSync(srcFull)) {
     return `Error: Source file not found: ${args.oldPath}`;
   }
-
   fs.mkdirSync(path.dirname(destFull), { recursive: true });
   fs.renameSync(srcFull, destFull);
-
   showActionLabel('rename', `${args.oldPath} → ${args.newPath}`);
   return `Successfully renamed ${args.oldPath} → ${args.newPath}`;
 }
@@ -470,25 +511,19 @@ export function executeSearchFiles(
   args: z.infer<typeof SearchFilesSchema>,
 ): string {
   const maxResults = args.maxResults ?? 20;
-
   try {
     const globFlag = args.fileGlob ? `--include="${args.fileGlob}"` : '';
     const cmd = `grep -rn ${globFlag} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.expo --exclude-dir=_generated --exclude-dir=ios --exclude-dir=android -m ${maxResults} "${args.pattern.replace(/"/g, '\\"')}" . 2>/dev/null || true`;
-
     const output = execSync(cmd, {
       cwd: projectRoot,
       encoding: 'utf-8',
       timeout: 15_000,
     }).trim();
-
-    if (!output) {
-      return `No matches found for "${args.pattern}"`;
-    }
-
+    if (!output) return `No matches found for "${args.pattern}"`;
     const lines = output.split('\n').slice(0, maxResults);
     return `Found ${lines.length} match(es):\n` + lines.join('\n');
   } catch {
-    return `Search failed for pattern "${args.pattern}". The pattern may be invalid.`;
+    return `Search failed for pattern "${args.pattern}".`;
   }
 }
 
@@ -497,7 +532,6 @@ export function executeReadMultipleFiles(
   args: z.infer<typeof ReadMultipleFilesSchema>,
 ): string {
   const results: string[] = [];
-
   for (const filePath of args.filePaths) {
     const fullPath = path.resolve(projectRoot, filePath);
     if (!fs.existsSync(fullPath)) {
@@ -514,103 +548,64 @@ export function executeReadMultipleFiles(
     const numbered = lines.map((line, i) => `${i + 1}: ${line}`).join('\n');
     results.push(`--- ${filePath} (${lines.length} lines) ---\n${numbered}`);
   }
-
   return results.join('\n\n');
 }
 
-// ─── Environment Variables Executor ──────────────────────────────────────────
-
 export function executeAddEnvironmentVariables(
-  _projectRoot: string,
   args: z.infer<typeof AddEnvironmentVariablesSchema>,
 ): string {
-  const names = args.envVarNames;
-
-  showActionLabel('env', names.join(', '));
-
-  const instructions = names
-    .map(
-      (name) =>
-        `  • ${name}\n    Set via dashboard: Convex Dashboard → Settings → Environment Variables\n    Or via CLI: npx convex env set ${name} <value>`,
-    )
-    .join('\n\n');
+  for (const name of args.envVarNames) {
+    pendingEnvVars.add(name);
+  }
+  showActionLabel('env', args.envVarNames.join(', '));
 
   return (
-    `The following environment variables need to be set on your Convex deployment:\n\n` +
-    instructions +
-    `\n\nPlease set these before using features that depend on them.`
+    `Queued ${args.envVarNames.length} environment variable(s): ${args.envVarNames.join(', ')}.\n\n` +
+    `These will be set on the Convex deployment AFTER you finish generating code, during the final setup phase. ` +
+    `Continue writing the app as if these will be available via process.env.<NAME>.`
   );
+}
+
+export function executeCheckDependencies(ctx: ToolContext): string {
+  return ctx.installManager.getStatusSummary();
 }
 
 // ─── Tool Router ─────────────────────────────────────────────────────────────
 
-export function executeTool(
-  projectRoot: string,
+export async function executeTool(
+  ctx: ToolContext,
   toolName: ToolName,
   toolInput: Record<string, any>,
-): string {
+): Promise<string> {
   switch (toolName) {
     case 'createFile':
-      return executeCreateFile(
-        projectRoot,
-        toolInput as z.infer<typeof CreateFileSchema>,
-      );
+      return executeCreateFile(ctx.projectRoot, toolInput as any);
     case 'editFile':
-      return executeEditFile(
-        projectRoot,
-        toolInput as z.infer<typeof EditFileSchema>,
-      );
+      return executeEditFile(ctx.projectRoot, toolInput as any);
     case 'runCommand':
-      return executeRunCommand(
-        projectRoot,
-        toolInput as z.infer<typeof RunCommandSchema>,
-      );
+      return executeRunCommand(ctx, toolInput as any);
     case 'viewFile':
-      return executeViewFile(
-        projectRoot,
-        toolInput as z.infer<typeof ViewFileSchema>,
-      );
+      return executeViewFile(ctx.projectRoot, toolInput as any);
     case 'listDirectory':
-      return executeListDirectory(
-        projectRoot,
-        toolInput as z.infer<typeof ListDirectorySchema>,
-      );
+      return executeListDirectory(ctx.projectRoot, toolInput as any);
     case 'deleteFile':
-      return executeDeleteFile(
-        projectRoot,
-        toolInput as z.infer<typeof DeleteFileSchema>,
-      );
+      return executeDeleteFile(ctx.projectRoot, toolInput as any);
     case 'renameFile':
-      return executeRenameFile(
-        projectRoot,
-        toolInput as z.infer<typeof RenameFileSchema>,
-      );
+      return executeRenameFile(ctx.projectRoot, toolInput as any);
     case 'searchFiles':
-      return executeSearchFiles(
-        projectRoot,
-        toolInput as z.infer<typeof SearchFilesSchema>,
-      );
+      return executeSearchFiles(ctx.projectRoot, toolInput as any);
     case 'readMultipleFiles':
-      return executeReadMultipleFiles(
-        projectRoot,
-        toolInput as z.infer<typeof ReadMultipleFilesSchema>,
-      );
+      return executeReadMultipleFiles(ctx.projectRoot, toolInput as any);
     case 'lookupDocs': {
       const args = toolInput as z.infer<typeof LookupDocsSchema>;
-      for (const skill of args.skills) {
-        showActionLabel('docs', skill);
-      }
-      // Load one skill or multiple
-      if (args.skills.length === 1) {
-        return readSkill(args.skills[0]);
-      }
+      for (const skill of args.skills) showActionLabel('docs', skill);
+      if (args.skills.length === 1) return readSkill(args.skills[0]);
       return readSkills(args.skills);
     }
     case 'addEnvironmentVariables':
-      return executeAddEnvironmentVariables(
-        projectRoot,
-        toolInput as z.infer<typeof AddEnvironmentVariablesSchema>,
-      );
+      return executeAddEnvironmentVariables(toolInput as any);
+    case 'checkDependencies':
+      return executeCheckDependencies(ctx);
     default:
       return `Error: Unknown tool ${toolName}`;
   }

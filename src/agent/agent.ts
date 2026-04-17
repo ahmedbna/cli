@@ -1,23 +1,19 @@
 // src/agent/agent.ts
 //
-// Core agentic loop: Convex HTTP action proxy (streaming) → tool execution → feed results back
+// Core agentic loop with parallelized dependency installation.
 //
-// Uses /cli/chat on the Convex site URL which streams Anthropic SSE events directly.
-// The CLI reads the stream, accumulates content, executes tools, and loops.
-//
-// Credit deduction:
-//   Credits are deducted SERVER-SIDE during streaming. The server injects custom
-//   SSE events (`bna_credits` and `bna_credits_final`) so the CLI can display
-//   running usage. The CLI does NOT control deduction — it only displays info.
-//
-// Auth: uses Convex auth token passed via authToken option.
-// On 401, automatically attempts token refresh and retries once.
+// The agent now receives an InstallManager and starts generating files
+// IMMEDIATELY — `npm install` runs in the background. When the model calls
+// `runCommand` for an npm/npx command, the InstallManager automatically
+// awaits the base install and serializes the call. This turns a previously
+// sequential step into a parallel one.
 
 import { generalSystemPrompt } from './prompts.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
 import { log } from '../utils/logger.js';
 import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
 import { refreshAuthToken } from '../utils/auth.js';
+import type { InstallManager } from '../utils/installManager.js';
 import chalk from 'chalk';
 import ora from 'ora';
 
@@ -28,6 +24,7 @@ export interface AgentOptions {
   prompt: string;
   stack: 'expo' | 'expo-convex';
   authToken?: string;
+  installManager: InstallManager;
 }
 
 interface TokenUsage {
@@ -35,25 +32,21 @@ interface TokenUsage {
   outputTokens: number;
 }
 
-// ─── Credit tracking from server events ──────────────────────────────────────
-
 interface CreditInfo {
   creditsUsed: number;
   remainingCredits: number;
 }
 
-// ─── Anthropic SSE event types ───────────────────────────────────────────────
+// ─── Anthropic SSE event types (unchanged) ──────────────────────────────────
 
 interface TextDelta {
   type: 'text_delta';
   text: string;
 }
-
 interface InputJsonDelta {
   type: 'input_json_delta';
   partial_json: string;
 }
-
 interface ContentBlockStart {
   type: 'content_block_start';
   index: number;
@@ -66,31 +59,24 @@ interface ContentBlockStart {
         input: Record<string, any>;
       };
 }
-
 interface ContentBlockDelta {
   type: 'content_block_delta';
   index: number;
   delta: TextDelta | InputJsonDelta;
 }
-
 interface ContentBlockStop {
   type: 'content_block_stop';
   index: number;
 }
-
 interface MessageDelta {
   type: 'message_delta';
   delta: { stop_reason: string; stop_sequence: string | null };
   usage: { output_tokens: number };
 }
-
 interface MessageStart {
   type: 'message_start';
-  message: {
-    usage: { input_tokens: number; output_tokens: number };
-  };
+  message: { usage: { input_tokens: number; output_tokens: number } };
 }
-
 type SSEEvent =
   | MessageStart
   | ContentBlockStart
@@ -101,13 +87,10 @@ type SSEEvent =
   | { type: 'ping' }
   | { type: 'error'; error: { type: string; message: string } };
 
-// ─── Block tracking during streaming ────────────────────────────────────────
-
 interface TextBlock {
   type: 'text';
   text: string;
 }
-
 interface ToolUseBlock {
   type: 'tool_use';
   id: string;
@@ -115,10 +98,9 @@ interface ToolUseBlock {
   inputJson: string;
   input: Record<string, any>;
 }
-
 type StreamBlock = TextBlock | ToolUseBlock;
 
-// ─── Shimmer spinner for "thinking" state ────────────────────────────────────
+// ─── Shimmer spinner ─────────────────────────────────────────────────────────
 
 const SHIMMER_CHARS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SHIMMER_COLORS = [
@@ -132,24 +114,17 @@ const SHIMMER_COLORS = [
 
 function createShimmerSpinner(text: string) {
   let colorIdx = 0;
-
   const spinner = ora({
     text: '',
-    spinner: {
-      interval: 80,
-      frames: SHIMMER_CHARS,
-    },
+    spinner: { interval: 80, frames: SHIMMER_CHARS },
     color: 'magenta',
   });
-
   const interval = setInterval(() => {
     const color = SHIMMER_COLORS[colorIdx % SHIMMER_COLORS.length];
     spinner.text = color(text);
     colorIdx++;
   }, 200);
-
   spinner.start();
-
   return {
     stop: () => {
       clearInterval(interval);
@@ -168,9 +143,8 @@ function createShimmerSpinner(text: string) {
 // ─── Main agent loop ─────────────────────────────────────────────────────────
 
 export async function runAgent(options: AgentOptions): Promise<void> {
-  const { projectRoot, prompt, stack } = options;
+  const { projectRoot, prompt, stack, installManager } = options;
 
-  // Use the pre-validated token if provided, otherwise read from store
   let authToken: string;
   if (options.authToken) {
     authToken = options.authToken;
@@ -184,48 +158,55 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   }
 
   const systemPrompt = generalSystemPrompt({ stack });
-
   const accumulated: TokenUsage = { inputTokens: 0, outputTokens: 0 };
-
-  // Track credit info received from server events
   let latestCreditInfo: CreditInfo = { creditsUsed: 0, remainingCredits: -1 };
 
+  // ── Updated user message — tells the model about parallel installation ──
+  const userMessage =
+    `You are BNA, an expert AI assistant and senior software engineer creating an app with the following description:\n\n${prompt}\n\n` +
+    `The project root is: ${projectRoot}\n` +
+    `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n` +
+    `### Parallel Execution Notice\n` +
+    `The project template has been copied and \`npm install\` is running IN THE BACKGROUND while you generate code. ` +
+    `You do NOT need to wait for it. Start writing files immediately.\n\n` +
+    `- File operations (createFile, editFile, viewFile, etc.) work immediately and do not need dependencies.\n` +
+    `- If you call \`runCommand\` for \`npx expo install <pkg>\`, it will automatically wait for the background install ` +
+    `to finish and then run. You don't need to check — just call it when you need it, ideally near the end of your work ` +
+    `so it runs in parallel with the rest of your file generation.\n` +
+    `- Convex setup (convex dev, convex auth) will be run AUTOMATICALLY after you finish, so do not run it yourself.\n` +
+    `- Environment variables should be queued via \`addEnvironmentVariables\` — they'll be applied during the final setup phase.\n\n` +
+    `### Template State\n` +
+    `The template includes: app/_layout.tsx, app/(home)/_layout.tsx, app/(home)/index.tsx, ` +
+    `app/(home)/settings.tsx, components/auth/, components/ui/button.tsx, components/ui/spinner.tsx, ` +
+    `convex/schema.ts, convex/auth.ts, convex/users.ts, convex/http.ts, theme/colors.ts, hooks/.\n\n` +
+    `### Your Job\n` +
+    `1. Design a unique theme (colors.ts) for this specific app\n` +
+    `2. Build or update UI components in components/ui/\n` +
+    `3. Add tables to the Convex schema (keep ...authTables and users table)\n` +
+    `4. Write Convex query/mutation functions\n` +
+    `5. Build the screens\n` +
+    `6. Only call \`runCommand\` with \`npx expo install <pkg>\` if you need NEW native packages — do this near the end so the base install has time to finish\n` +
+    `7. IMPORTANT: As your FINAL step, write an ARCHITECTURE.md file documenting the complete project structure.`;
+
   const messages: Array<{ role: string; content: any }> = [
-    {
-      role: 'user',
-      content:
-        `You are BNA, an expert AI assistant and senior software engineer create app with the following description:\n\n${prompt}\n\n` +
-        `The project root is: ${projectRoot}\n` +
-        `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n` +
-        `The project template has already been copied and dependencies installed. ` +
-        `The template includes: app/_layout.tsx, app/(home)/_layout.tsx, app/(home)/index.tsx, ` +
-        `app/(home)/settings.tsx, components/auth/, components/ui/button.tsx, components/ui/spinner.tsx, ` +
-        `convex/schema.ts, convex/auth.ts, convex/users.ts, convex/http.ts, theme/colors.ts, hooks/.\n\n` +
-        `DO NOT run \`npx create-expo-app\` or \`npm init\` — the project is already scaffolded.\n` +
-        `DO NOT run \`npm install\` for base dependencies — they are already installed.\n` +
-        `DO NOT run \`npx convex dev\` — it will be started automatically after you finish.\n\n` +
-        `Your job is to customize this template to match the user's description:\n` +
-        `1. Design a unique theme (colors.ts) for this specific app\n` +
-        `2. Build or update UI components in components/ui/\n` +
-        `3. Add tables to the Convex schema (keep ...authTables and users table)\n` +
-        `4. Write Convex query/mutation functions\n` +
-        `5. Build the screens\n` +
-        `6. Only run \`npx expo install <pkg>\` if you need NEW packages not in the template\n` +
-        `7. IMPORTANT: As your FINAL step, write an ARCHITECTURE.md file at the project root that documents the complete project structure, what each file does, and where it is used. This is critical for future modifications.`,
-    },
+    { role: 'user', content: userMessage },
   ];
 
   log.divider();
-  log.info(chalk.bold('Starting BNA Agent...'));
+  log.info(chalk.bold('Starting BNA Agent (parallel mode)...'));
   log.info(`Stack: ${chalk.cyan(stack)}`);
   log.info(`Project: ${chalk.cyan(projectRoot)}`);
+  log.info(
+    chalk.dim(
+      `Install state: ${installManager.getStatus()} — agent starting in parallel`,
+    ),
+  );
   log.divider();
 
-  // ── Register graceful exit handler ─────────────────────────────────────
-  // If the user presses Ctrl+C, display credit usage before exiting.
   const exitHandler = () => {
     console.log();
     log.divider();
+    installManager.abort();
     if (latestCreditInfo.creditsUsed > 0) {
       log.info(
         chalk.dim('Credits used: ') +
@@ -244,17 +225,16 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         chalk.dim(' + ') +
         chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
     );
-    log.warn(
-      'Agent interrupted. Credits for tokens already streamed have been deducted server-side.',
-    );
+    log.warn('Agent interrupted.');
     process.exit(0);
   };
 
   process.on('SIGINT', exitHandler);
   process.on('SIGTERM', exitHandler);
 
+  const toolCtx = { projectRoot, installManager };
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    // ── Call the streaming endpoint ────────────────────────────────────────
     let response: Response;
     try {
       response = await fetchStream(
@@ -266,22 +246,15 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       );
     } catch (err: any) {
       log.error(`Network error: ${err.message ?? 'Unknown error'}`);
-      log.warn('Check your internet connection and try again.');
-      log.warn(
-        'Note: credits for any tokens already streamed have been deducted server-side.',
-      );
       process.exit(1);
     }
 
-    // ── Handle 401 with automatic token refresh + retry ───────────────────
     if (response.status === 401) {
       log.warn('Auth token expired mid-session, attempting refresh...');
       const refreshedToken = await refreshAuthToken();
-
       if (refreshedToken) {
         authToken = refreshedToken;
         log.success('Token refreshed, retrying...');
-
         try {
           response = await fetchStream(
             CONVEX_SITE_URL,
@@ -291,12 +264,9 @@ export async function runAgent(options: AgentOptions): Promise<void> {
             toolDefinitions,
           );
         } catch (err: any) {
-          log.error(
-            `Network error after refresh: ${err.message ?? 'Unknown error'}`,
-          );
+          log.error(`Network error after refresh: ${err.message}`);
           process.exit(1);
         }
-
         if (response.status === 401) {
           log.error(
             'Authentication expired. Run `bna login` to re-authenticate.',
@@ -304,15 +274,11 @@ export async function runAgent(options: AgentOptions): Promise<void> {
           process.exit(1);
         }
       } else {
-        log.error(
-          'Authentication expired and could not be refreshed.\n' +
-            `  Run ${chalk.cyan('bna login')} to re-authenticate.`,
-        );
+        log.error('Authentication expired and could not be refreshed.');
         process.exit(1);
       }
     }
 
-    // ── Handle 402 Payment Required (insufficient credits) ────────────────
     if (response.status === 402) {
       log.error(
         'Insufficient credits. Visit https://ai.ahmedbna.com/credits to purchase more.',
@@ -322,53 +288,38 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
     if (!response.ok) {
       let errMsg = `API request failed (${response.status})`;
-      let errBody = '';
-
       try {
         const contentType = response.headers.get('content-type') ?? '';
         if (contentType.includes('application/json')) {
           const errJson = await response.json();
-          errBody = errJson.error ?? errJson.message ?? JSON.stringify(errJson);
+          errMsg = errJson.error ?? errJson.message ?? JSON.stringify(errJson);
         } else {
-          errBody = await response.text();
+          errMsg = await response.text();
         }
-        if (errBody) errMsg = errBody;
       } catch {
-        // ignore parse errors
+        /* ignore */
       }
-
-      if (response.status === 429) {
-        log.error('Rate limited. Please wait a moment and try again.');
-      } else if (response.status === 500 || response.status === 502) {
-        log.error('Server error. Please try again in a moment.');
-        log.info(chalk.dim(`Details: ${errMsg}`));
-      } else {
-        log.error(`${errMsg}`);
-      }
+      log.error(errMsg);
       process.exit(1);
     }
 
-    // ── Read and process the SSE stream ───────────────────────────────────
     const { blocks, stopReason, usage, creditInfo } = await readStream(
       response,
       round,
     );
 
-    // Accumulate token usage
     if (usage) {
       accumulated.inputTokens += usage.inputTokens;
       accumulated.outputTokens += usage.outputTokens;
     }
+    if (creditInfo) latestCreditInfo = creditInfo;
 
-    // Update credit info from server events
-    if (creditInfo) {
-      latestCreditInfo = creditInfo;
-    }
-
-    // ── Build assistant message and collect tool results ──────────────────
     const assistantContent: any[] = [];
     const toolResults: any[] = [];
 
+    // Tool execution is now async (runCommand awaits install state).
+    // We execute tool calls within a round SEQUENTIALLY to keep
+    // deterministic file ordering, but the execution itself can await.
     for (const block of blocks) {
       if (block.type === 'text') {
         assistantContent.push({ type: 'text', text: block.text });
@@ -381,10 +332,9 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         });
 
         const toolName = block.name as ToolName;
-
         let result: string;
         try {
-          result = executeTool(projectRoot, toolName, block.input);
+          result = await executeTool(toolCtx, toolName, block.input);
         } catch (err: any) {
           result = `Error: ${err.message}`;
           log.error(err.message);
@@ -398,16 +348,13 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       }
     }
 
-    // Add assistant turn
     messages.push({ role: 'assistant', content: assistantContent });
 
-    // If tools were called, add results and continue
     if (toolResults.length > 0) {
       messages.push({ role: 'user', content: toolResults });
       continue;
     }
 
-    // No tool calls — check stop reason
     if (stopReason === 'end_turn') break;
 
     if (stopReason === 'max_tokens') {
@@ -422,11 +369,9 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     break;
   }
 
-  // ── Clean up exit handlers ────────────────────────────────────────────────
   process.removeListener('SIGINT', exitHandler);
   process.removeListener('SIGTERM', exitHandler);
 
-  // ── Report usage ──────────────────────────────────────────────────────────
   console.log();
   log.divider();
   log.info(
@@ -436,7 +381,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       chalk.white(`${accumulated.outputTokens.toLocaleString()} output`),
   );
 
-  // Display credit info from server (deducted server-side)
   if (latestCreditInfo.creditsUsed > 0) {
     log.info(
       chalk.dim('Credits used: ') +
@@ -466,11 +410,7 @@ async function fetchStream(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({
-      system: systemPrompt,
-      messages,
-      tools,
-    }),
+    body: JSON.stringify({ system: systemPrompt, messages, tools }),
   });
 }
 
@@ -516,11 +456,9 @@ async function readStream(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
-      // Track the current SSE event type for multi-line parsing
       let currentEventType: string | null = null;
 
       for (const line of lines) {
@@ -530,7 +468,6 @@ async function readStream(
           continue;
         }
 
-        // Parse SSE event type field
         if (trimmed.startsWith('event: ')) {
           currentEventType = trimmed.slice(7).trim();
           continue;
@@ -540,7 +477,6 @@ async function readStream(
           const data = trimmed.slice(6).trim();
           if (data === '[DONE]') continue;
 
-          // Handle custom BNA credit events from server
           if (
             currentEventType === 'bna_credits' ||
             currentEventType === 'bna_credits_final'
@@ -552,13 +488,12 @@ async function readStream(
                 remainingCredits: creditData.remainingCredits ?? -1,
               };
             } catch {
-              // Ignore parse errors on credit events
+              /* ignore */
             }
             currentEventType = null;
             continue;
           }
 
-          // Reset event type after processing data line
           currentEventType = null;
 
           let event: SSEEvent;
@@ -615,8 +550,6 @@ async function readStream(
   };
 }
 
-// ─── SSE event processor ─────────────────────────────────────────────────────
-
 function processEvent(
   event: SSEEvent,
   ctx: {
@@ -637,7 +570,6 @@ function processEvent(
       onUsage(u.input_tokens, u.output_tokens);
       break;
     }
-
     case 'content_block_start': {
       const cb = event.content_block;
       let block: StreamBlock;
@@ -657,11 +589,9 @@ function processEvent(
       indexToBlock.set(event.index, block);
       break;
     }
-
     case 'content_block_delta': {
       const block = indexToBlock.get(event.index);
       if (!block) break;
-
       const delta = event.delta;
       if (delta.type === 'text_delta') {
         if (block.type === 'text') {
@@ -675,7 +605,6 @@ function processEvent(
       }
       break;
     }
-
     case 'content_block_stop': {
       const block = indexToBlock.get(event.index);
       if (block?.type === 'tool_use') {
@@ -687,20 +616,15 @@ function processEvent(
       }
       break;
     }
-
     case 'message_delta': {
       onUsage(0, event.usage?.output_tokens ?? 0);
-      if (event.delta.stop_reason) {
-        onStopReason(event.delta.stop_reason);
-      }
+      if (event.delta.stop_reason) onStopReason(event.delta.stop_reason);
       break;
     }
-
     case 'error': {
       log.error(`Stream error: ${event.error.message}`);
       break;
     }
-
     default:
       break;
   }

@@ -1,12 +1,24 @@
+// src/agent/prompts/secretsInstructions.ts
+
 import { stripIndents } from '../../utils/stripIndent.js';
 
 export function secretsInstructions() {
   return stripIndents`
 <secrets_instructions>
-  For API keys/secrets:
-  1. Tell the user the exact env var name (e.g. \`OPENAI_API_KEY\`).
-  2. Instruct: open Convex dashboard → "Settings" → "Environment variables" → set and save OR ask user to run: npx convex env set OPENAI_API_KEY <youropenaiapikey>
-  3. Wait for user confirmation before writing code that uses the secret.
+  When your app needs API keys or secrets:
+
+  1. Call \`addEnvironmentVariables\` with the exact env var name(s) (e.g. \`OPENAI_API_KEY\`).
+     This queues them — you don't wait, just continue building.
+  2. Write your Convex code to read them from \`process.env.<VAR_NAME>\` as normal.
+  3. The CLI will prompt the user for values during the final Convex setup phase,
+     BEFORE the first deploy, so the values are available when Convex boots.
+
+  Do NOT:
+  - Instruct the user mid-generation to go set env vars — the CLI handles this at the end
+  - Block your own progress waiting for confirmation
+  - Hardcode placeholder values in your code
+
+  Just queue, continue, and reference via process.env.
 </secrets_instructions>
 `;
 }
