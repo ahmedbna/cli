@@ -166,28 +166,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   const userMessage =
     `You are BNA, an expert AI assistant and senior software engineer creating an app with the following description:\n\n${prompt}\n\n` +
     `The project root is: ${projectRoot}\n` +
-    `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n` +
-    `### Parallel Execution Notice\n` +
-    `The project template has been copied and \`npm install\` is running IN THE BACKGROUND while you generate code. ` +
-    `You do NOT need to wait for it. Start writing files immediately.\n\n` +
-    `- File operations (createFile, editFile, viewFile, etc.) work immediately and do not need dependencies.\n` +
-    `- If you call \`runCommand\` for \`npx expo install <pkg>\`, it will automatically wait for the background install ` +
-    `to finish and then run. You don't need to check — just call it when you need it, ideally near the end of your work ` +
-    `so it runs in parallel with the rest of your file generation.\n` +
-    `- Convex setup (convex dev, convex auth) will be run AUTOMATICALLY after you finish, so do not run it yourself.\n` +
-    `- Environment variables should be queued via \`addEnvironmentVariables\` — they'll be applied during the final setup phase.\n\n` +
-    `### Template State\n` +
-    `The template includes: app/_layout.tsx, app/(home)/_layout.tsx, app/(home)/index.tsx, ` +
-    `app/(home)/settings.tsx, components/auth/, components/ui/button.tsx, components/ui/spinner.tsx, ` +
-    `convex/schema.ts, convex/auth.ts, convex/users.ts, convex/http.ts, theme/colors.ts, hooks/.\n\n` +
-    `### Your Job\n` +
-    `1. Design a unique theme (colors.ts) for this specific app\n` +
-    `2. Build or update UI components in components/ui/\n` +
-    `3. Add tables to the Convex schema (keep ...authTables and users table)\n` +
-    `4. Write Convex query/mutation functions\n` +
-    `5. Build the screens\n` +
-    `6. Only call \`runCommand\` with \`npx expo install <pkg>\` if you need NEW native packages — do this near the end so the base install has time to finish\n` +
-    `7. IMPORTANT: As your FINAL step, write an ARCHITECTURE.md file documenting the complete project structure.`;
+    `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n`;
 
   const context = new ContextManager({
     keepRecentRounds: 3,

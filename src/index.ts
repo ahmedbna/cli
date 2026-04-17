@@ -62,7 +62,7 @@ program
 
 // Default: if no command is given, run build
 program.action(() => {
-  generateCommand({});
+  configCommand();
 });
 
 program.parse();

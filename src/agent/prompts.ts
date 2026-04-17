@@ -118,6 +118,14 @@ Check background \`npm install\` state. Rarely needed — file ops don't depend 
 8. If new native packages are needed, install them NEAR THE END
 9. If env vars are needed, queue them via \`addEnvironmentVariables\`
 10. Write ARCHITECTURE.md as the FINAL step
+
+### Parallel Execution Notice
+The project template has been copied and \`npm install\` is running IN THE BACKGROUND while you generate code.
+You do NOT need to wait for it. Start writing files immediately.
+- File operations (createFile, editFile, viewFile, etc.) work immediately and do not need dependencies.
+- If you call \`runCommand\` for \`npx expo install <pkg>\`, it will automatically wait for the background install to finish and then run. You don't need to check — just call it when you need it, ideally near the end of your work so it runs in parallel with the rest of your file generation.
+- Convex setup (convex dev, convex auth) will be run AUTOMATICALLY after you finish, so do not run it yourself.
+- Environment variables should be queued via \`addEnvironmentVariables\` — they'll be applied during the final setup phase.
 `;
 }
 
