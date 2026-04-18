@@ -1,40 +1,41 @@
 // src/commands/build.ts
 //
-// Parallelized build workflow:
+// Build workflow:
 //
-//   Phase 1: Setup             (sequential, fast)
+//   Phase 1: Setup (sequential, fast)
 //     - Auth validation
 //     - Credit check
 //     - Project name/stack/prompt prompts
 //     - Template copy
 //
-//   Phase 2: Parallel Execution (the big win)
-//     - npm install runs in the background via InstallManager
-//     - AI agent runs concurrently, writing files
-//     - Agent's `runCommand` calls wait for install as needed
+//   Phase 2: Parallel Execution
+//     - `npm install` runs in the background (streamed live above the spinner)
+//     - AI agent runs concurrently, writing files (every action shown in real time)
 //
-//   Phase 3: Finalization       (sequential, after agent + install both done)
-//     - Convex project init (interactive)
-//     - Convex auth setup (interactive)
-//     - Apply queued environment variables
-//     - Final deploy
-//     - Start dev servers
+//   Phase 3: Finalization (sequential, in this exact order)
+//     1. Convex project init       — `npx convex dev --once`
+//     2. Full TypeScript check     — `tsc --noEmit`, auto-fix errors with agent
+//     3. Git init + add + commit   — `git init`, `git add .`, `git commit -m "bna"`
+//     4. Convex Auth setup         — `npx @convex-dev/auth`, apply env vars, final deploy
+//     5. Launch the app            — `npx expo run:ios` / `npx expo run:android`
 //
-// Interrupt handling: SIGINT aborts all in-flight work cleanly. Partial state
-// is preserved — the scaffolded project and any generated files remain on disk.
+// Every long-running step streams output live so the terminal never appears idle.
 
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { log } from '../utils/logger.js';
 import { ensureValidAuth, revalidateAuth } from '../utils/auth.js';
 import { checkCredits } from '../utils/credits.js';
 import { runAgent } from '../agent/agent.js';
 import { InstallManager } from '../utils/installManager.js';
 import { getPendingEnvVars, clearPendingEnvVars } from '../agent/tools.js';
+import { startSpinner, stopActiveSpinner } from '../utils/liveSpinner.js';
+import { typeCheckAndFix } from '../utils/tsCheck.js';
+import { initGitRepo } from '../utils/gitInit.js';
 
 interface GenerateOptions {
   prompt?: string;
@@ -83,18 +84,91 @@ function isMacOS(): boolean {
   return os.platform() === 'darwin';
 }
 
-function runInteractive(command: string, cwd: string): boolean {
-  try {
-    const result = spawnSync(command, {
+/**
+ * Run a command interactively (inherits stdio) — used when we WANT the user
+ * to see and interact with prompts directly, e.g. Convex team selection.
+ *
+ * IMPORTANT: no spinner should be active when this runs — it will corrupt
+ * the interactive output.
+ */
+function runInteractive(command: string, cwd: string): Promise<boolean> {
+  // Ensure no spinner is on screen
+  stopActiveSpinner();
+
+  return new Promise((resolve) => {
+    const proc = spawn(command, {
       cwd,
       stdio: 'inherit',
       shell: true,
       env: { ...process.env, FORCE_COLOR: '1' },
     });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
+    proc.on('close', (code) => resolve(code === 0));
+    proc.on('error', () => resolve(false));
+  });
+}
+
+/**
+ * Run a command and stream its output live above a spinner.
+ * Used for non-interactive commands where we want continuous feedback.
+ */
+async function runStreamed(
+  command: string,
+  cwd: string,
+  label: string,
+  timeoutMs = 600_000,
+): Promise<{ ok: boolean; output: string }> {
+  const spinner = startSpinner(chalk.magenta(label));
+  return new Promise((resolve) => {
+    const proc = spawn(command, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      env: { ...process.env, FORCE_COLOR: '0', CI: '1' },
+    });
+    let captured = '';
+    let buf = '';
+    const handle = (chunk: Buffer) => {
+      const text = chunk.toString();
+      captured += text;
+      if (captured.length > 32_000) captured = captured.slice(-16_000);
+      buf += text;
+      const parts = buf.split('\n');
+      buf = parts.pop() ?? '';
+      for (const raw of parts) {
+        const line = raw.trimEnd();
+        if (line) spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(line));
+      }
+    };
+    proc.stdout?.on('data', handle);
+    proc.stderr?.on('data', handle);
+
+    const timer = setTimeout(() => {
+      spinner.writeAbove(chalk.red('    │ (timeout — killing process)'));
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        /* noop */
+      }
+    }, timeoutMs);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (buf.trim())
+        spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(buf.trim()));
+      if (code === 0) {
+        spinner.succeed(chalk.green(label + ' ✓'));
+        resolve({ ok: true, output: captured.trim() });
+      } else {
+        spinner.fail(chalk.red(label + ` (exit ${code})`));
+        resolve({ ok: false, output: captured.trim() });
+      }
+    });
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      spinner.fail(chalk.red(label + ` (${err.message})`));
+      resolve({ ok: false, output: err.message });
+    });
+  });
 }
 
 // ─── Main command ────────────────────────────────────────────────────────────
@@ -103,7 +177,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.banner();
 
   // ════════════════════════════════════════════════════════════════════════
-  // Phase 1: Setup — fast, sequential, no heavy I/O
+  // Phase 1: Setup
   // ════════════════════════════════════════════════════════════════════════
 
   await ensureValidAuth();
@@ -202,17 +276,24 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   console.log();
 
   // ── Copy template (fast — ~2s) ─────────────────────────────────────────
-  log.info('Initializing the app...');
-  try {
-    const templateDir = resolveTemplateDir(stack);
-    if (!fs.existsSync(projectRoot)) {
-      fs.mkdirSync(projectRoot, { recursive: true });
+  {
+    const initSpinner = startSpinner(
+      chalk.cyan('Initializing the app from template'),
+    );
+    try {
+      const templateDir = resolveTemplateDir(stack);
+      if (!fs.existsSync(projectRoot)) {
+        fs.mkdirSync(projectRoot, { recursive: true });
+      }
+      copyTemplateDir(templateDir, projectRoot);
+      initSpinner.succeed(
+        chalk.green(`App initialized at ${chalk.cyan(projectRoot)}`),
+      );
+    } catch (err: any) {
+      initSpinner.fail(chalk.red('Failed to initialize the app'));
+      log.error(err.message);
+      process.exit(1);
     }
-    copyTemplateDir(templateDir, projectRoot);
-    log.success(`App initialized at: ${chalk.cyan(projectRoot)}`);
-  } catch (err: any) {
-    log.error(`Failed to initialize the app: ${err.message}`);
-    process.exit(1);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -220,29 +301,21 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   // ════════════════════════════════════════════════════════════════════════
 
   const installManager = new InstallManager(projectRoot);
-
-  // If the user passed --no-install, skip the background install entirely.
-  // This is mainly useful for testing or when the user wants to inspect the
-  // scaffolded project before dependencies resolve. Agent can still run —
-  // any `runCommand` with npm/npx will fail with a clear error.
   const skipInstall = options.install === false;
   const skipRun = options.run === false;
 
-  // Register a SIGINT handler for the parallel phase. This fires BEFORE the
-  // agent's own handler (agent registers later), so we need it to do full
-  // cleanup: abort install, then exit. Once the agent registers its handler
-  // we remove this one to avoid double-exit logic.
   let parallelSigintActive = true;
   const parallelSigint = () => {
     if (!parallelSigintActive) return;
     parallelSigintActive = false;
+    stopActiveSpinner();
     console.log();
     log.warn('Interrupted. Aborting background install...');
     installManager.abort();
     log.info(
       'Your scaffolded project is preserved at ' + chalk.cyan(projectRoot),
     );
-    process.exit(130); // 128 + SIGINT(2)
+    process.exit(130);
   };
   process.on('SIGINT', parallelSigint);
   process.on('SIGTERM', parallelSigint);
@@ -253,9 +326,23 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.info(chalk.dim('  • AI agent    — starting now'));
   log.divider();
 
-  // Kick off the background install FIRST so it has a head start while
-  // the agent boots up and makes its first network round trip.
-  // Honor --no-install for debug/test scenarios.
+  // Subscribe to base install progress so we can surface occasional lines
+  // without drowning out agent output. We throttle to ~1 line every 3s.
+  let lastInstallLineAt = 0;
+  const unsubscribeInstall = installManager.onBaseInstallLine((line) => {
+    const now = Date.now();
+    if (now - lastInstallLineAt < 3000) return;
+    lastInstallLineAt = now;
+    // These arrive while the agent may be animating — use the spinner's
+    // writeAbove if one is active, else just print.
+    const msg = chalk.dim('  [npm install] ') + chalk.dim(line);
+    // getActiveSpinner lives in liveSpinner but we keep it simple:
+    // write directly — the active spinner's next tick will redraw itself.
+    // Since TTY line rewrite uses \r, this may briefly flash, but it's
+    // far better than the previous zero-feedback approach.
+    process.stdout.write('\r\x1b[K' + msg + '\n');
+  });
+
   if (skipInstall) {
     log.warn(
       '--no-install: skipping background npm install. ' +
@@ -265,14 +352,8 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     installManager.startBaseInstall();
   }
 
-  // Start the agent. The agent registers its OWN SIGINT handler on entry;
-  // we deactivate ours so we don't double-exit. We still keep it registered
-  // in case the agent exits abnormally without removing its listener.
   const freshToken = await revalidateAuth();
 
-  // Hand off signal responsibility to the agent: it will handle cleanup
-  // and exit. We mark ours inactive so it becomes a no-op but stays
-  // registered as a safety net.
   parallelSigintActive = false;
 
   try {
@@ -284,9 +365,11 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       installManager,
     });
   } catch (err: any) {
+    unsubscribeInstall();
     installManager.abort();
     process.removeListener('SIGINT', parallelSigint);
     process.removeListener('SIGTERM', parallelSigint);
+    stopActiveSpinner();
     log.error(`Agent failed: ${err.message ?? 'unknown error'}`);
     log.warn(
       'Your scaffolded project is preserved at ' + chalk.cyan(projectRoot),
@@ -294,28 +377,31 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Agent finished cleanly — reactivate our handler to cover Phase 3.
   parallelSigintActive = true;
 
-  // ── Synchronization point: wait for the background install to finish ───
-  // By the time the agent finishes, the install has usually already completed
-  // (it's only ~45s vs ~2-4 min of generation). But we still await to be safe.
+  // Wait for the background install to finish with a visible spinner
   if (!skipInstall) {
-    log.info('Ensuring dependencies finished installing...');
+    const awaitSpinner = startSpinner(
+      chalk.cyan('Ensuring background dependencies have finished installing'),
+    );
     const installResult = await installManager.awaitBaseInstall();
-    installManager.printReadyBanner();
-
-    if (!installResult.ok) {
+    unsubscribeInstall();
+    if (installResult.ok) {
+      const seconds = Math.round(installResult.durationMs / 1000);
+      awaitSpinner.succeed(chalk.green(`Dependencies installed (${seconds}s)`));
+    } else {
+      awaitSpinner.fail(chalk.red('npm install failed'));
       log.warn(
         'Base npm install failed. You can retry manually with:\n' +
           '  ' +
           chalk.cyan(`cd ${projectRoot} && npm install --legacy-peer-deps`),
       );
+      stopActiveSpinner();
       const { continueAnyway } = await inquirer.prompt([
         {
           type: 'confirm',
           name: 'continueAnyway',
-          message: 'Continue with Convex setup anyway?',
+          message: 'Continue with finalization anyway?',
           default: false,
         },
       ]);
@@ -334,25 +420,27 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
         chalk.cyan(`cd ${projectRoot} && npm install`) +
         ' before starting dev servers.',
     );
+    unsubscribeInstall();
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // Phase 3: Finalization — deferred Convex setup + env vars + dev servers
+  // Phase 3: Finalization — exact ordering per requirements
+  //   1. Convex init
+  //   2. TypeScript check + autofix
+  //   3. Git init + add + commit
+  //   4. Convex Auth setup + env vars + final deploy
+  //   5. Launch simulator
   // ════════════════════════════════════════════════════════════════════════
 
+  console.log();
+  log.divider();
+  log.info(chalk.bold('Finalizing your app'));
+  log.divider();
+
+  // ── Step 1: Convex init ────────────────────────────────────────────────
   if (stack === 'expo-convex') {
     console.log();
-    log.divider();
-    log.info(chalk.bold('Finalizing — Convex setup'));
-    log.info(
-      chalk.dim(
-        'Code generation is complete. Now we set up the Convex backend and auth.',
-      ),
-    );
-    log.divider();
-
-    console.log();
-    log.info(chalk.bold('Step 1/3 — Initialize Convex project'));
+    log.info(chalk.bold.cyan('Step 1/5 — Initialize Convex project'));
     log.info(
       chalk.dim(
         'Select your team, enter a project name, and choose deployment type.',
@@ -360,7 +448,10 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     );
     console.log();
 
-    const convexInitOk = runInteractive('npx convex dev --once', projectRoot);
+    const convexInitOk = await runInteractive(
+      'npx convex dev --once',
+      projectRoot,
+    );
 
     if (!convexInitOk) {
       log.warn(
@@ -379,15 +470,58 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     } else {
       log.success('Convex project initialized.');
     }
+  } else {
+    log.info(chalk.dim('Step 1/5 — Convex init skipped (Expo-only stack).'));
+  }
 
+  // ── Step 2: TypeScript check + autofix ─────────────────────────────────
+  console.log();
+  log.info(chalk.bold.cyan('Step 2/5 — TypeScript check'));
+  log.info(
+    chalk.dim(
+      'Running a full type check. Errors will be fixed automatically where possible.',
+    ),
+  );
+  console.log();
+
+  const typesClean = await typeCheckAndFix({
+    projectRoot,
+    installManager,
+    stack,
+    authToken: freshToken,
+  });
+
+  if (!typesClean) {
+    log.warn(
+      'Some TypeScript errors remain. Continuing anyway — you can run ' +
+        chalk.cyan('npx tsc --noEmit') +
+        ' later to review.',
+    );
+  }
+
+  // ── Step 3: Git init + commit ──────────────────────────────────────────
+  console.log();
+  log.info(chalk.bold.cyan('Step 3/5 — Initialize git repository'));
+  console.log();
+
+  const gitOk = await initGitRepo(projectRoot);
+  if (!gitOk) {
+    log.warn('Git initialization had issues — you can run git manually later.');
+  }
+
+  // ── Step 4: Convex Auth setup + env vars + final deploy ────────────────
+  if (stack === 'expo-convex') {
     console.log();
-    log.info(chalk.bold('Step 2/3 — Configure Convex Auth'));
+    log.info(chalk.bold.cyan('Step 4/5 — Configure Convex Auth'));
     log.info(
       chalk.dim('This configures JWT keys and validates your auth setup.'),
     );
     console.log();
 
-    const authInitOk = runInteractive('npx @convex-dev/auth', projectRoot);
+    const authInitOk = await runInteractive(
+      'npx @convex-dev/auth',
+      projectRoot,
+    );
     if (!authInitOk) {
       log.warn(
         'Convex Auth setup did not complete.\n' +
@@ -397,11 +531,10 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       log.success('Convex Auth configured.');
     }
 
-    // ── Apply queued environment variables ──────────────────────────────
+    // Apply queued environment variables
     const pendingEnvs = getPendingEnvVars();
     if (pendingEnvs.length > 0) {
       console.log();
-      log.info(chalk.bold('Step 3/3 — Environment variables'));
       log.info(
         chalk.dim(
           'The agent requested the following environment variables for this app:',
@@ -411,11 +544,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
         log.info('  • ' + chalk.yellow(name));
       }
       console.log();
-      log.info(
-        'For each one, either:\n' +
-          `  1. Set it in the Convex dashboard → ${chalk.cyan('Settings → Environment Variables')}\n` +
-          `  2. Or run: ${chalk.cyan(`npx convex env set <NAME> <value>`)}\n`,
-      );
 
       const { setNow } = await inquirer.prompt([
         {
@@ -438,8 +566,12 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
           ]);
           if (value && value.trim().length > 0) {
             const cmd = `npx convex env set ${name} "${value.replace(/"/g, '\\"')}"`;
-            const ok = runInteractive(cmd, projectRoot);
-            if (ok) log.success(`Set ${name}`);
+            const result = await runStreamed(
+              cmd,
+              projectRoot,
+              `Setting ${name}`,
+            );
+            if (result.ok) log.success(`Set ${name}`);
             else log.warn(`Failed to set ${name} — set it manually later`);
           } else {
             log.info(
@@ -451,11 +583,15 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       clearPendingEnvVars();
     }
 
-    // ── Final deploy: includes everything the agent wrote + any env vars ─
+    // Final deploy
     console.log();
-    log.info('Deploying final state to Convex...');
-    const finalDeployOk = runInteractive('npx convex dev --once', projectRoot);
-    if (finalDeployOk) log.success('Backend deployed.');
+    const finalDeploy = await runStreamed(
+      'npx convex dev --once',
+      projectRoot,
+      'Deploying final state to Convex',
+      600_000,
+    );
+    if (finalDeploy.ok) log.success('Backend deployed.');
     else {
       log.warn(
         'Final deploy failed. You may need to fix schema errors and run ' +
@@ -464,8 +600,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       );
     }
   } else {
-    // Stack is 'expo' only — no Convex work. Still respect queued env vars
-    // by informing the user.
     const pendingEnvs = getPendingEnvVars();
     if (pendingEnvs.length > 0) {
       console.log();
@@ -480,24 +614,28 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       );
       clearPendingEnvVars();
     }
+    log.info(chalk.dim('Step 4/5 — Convex Auth skipped (Expo-only stack).'));
   }
 
-  // ── Deactivate SIGINT handler — all critical work is done ──────────────
+  // Deactivate SIGINT handler — all critical work is done
   parallelSigintActive = false;
   process.removeListener('SIGINT', parallelSigint);
   process.removeListener('SIGTERM', parallelSigint);
 
-  // ── Start dev servers ─────────────────────────────────────────────────
+  // ── Step 5: Launch the app in the simulator ───────────────────────────
   const expoCommand = isMacOS() ? 'npx expo run:ios' : 'npx expo run:android';
   const platform = isMacOS() ? 'iOS' : 'Android';
 
+  console.log();
+  log.info(chalk.bold.cyan(`Step 5/5 — Launch app in ${platform} simulator`));
+  console.log();
+
   if (skipRun) {
+    log.info(chalk.dim('--no-run: skipping dev server launch.'));
     console.log();
     log.divider();
     log.success(chalk.bold('Your app is ready!'));
-    log.info(chalk.dim('--no-run: skipping dev server launch.'));
     console.log();
-
     if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
     if (stack === 'expo-convex') {
       log.info(
@@ -512,8 +650,9 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
 
   if (stack === 'expo-convex') {
-    console.log();
-    log.info('Starting Convex dev server (background)...');
+    const bgSpinner = startSpinner(
+      chalk.cyan('Starting Convex dev server in background'),
+    );
     const convexDevProc = spawn('npx', ['convex', 'dev'], {
       cwd: projectRoot,
       stdio: 'ignore',
@@ -522,13 +661,16 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       shell: true,
     });
     convexDevProc.unref();
-    log.success('Convex dev server running in background.');
+    bgSpinner.succeed(chalk.green('Convex dev server running in background'));
   }
 
   console.log();
   log.info(`Starting Expo dev build for ${chalk.cyan(platform)}...`);
   log.info(chalk.dim(`Running: ${expoCommand}`));
   console.log();
+
+  // Stop any stray spinner — the Expo CLI takes over stdin/stdout from here.
+  stopActiveSpinner();
 
   const expoProc = spawn(expoCommand, [], {
     cwd: projectRoot,
@@ -545,7 +687,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.divider();
   log.success(chalk.bold('Your app is ready!'));
   console.log();
-
   if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
   if (stack === 'expo-convex') {
     log.info(

@@ -1,14 +1,15 @@
 // src/agent/agent.ts
 //
-// Core agentic loop with parallelized dependency installation.
+// Core agentic loop with parallelized dependency installation and
+// real-time streaming feedback.
 //
-// The agent now receives an InstallManager and starts generating files
-// IMMEDIATELY — `npm install` runs in the background. When the model calls
-// `runCommand` for an npm/npx command, the InstallManager automatically
-// awaits the base install and serializes the call. This turns a previously
-// sequential step into a parallel one.
+// Streaming model:
+//   - A LiveSpinner ticks continuously during the "Thinking..." phase.
+//   - The moment the model starts emitting text, the spinner is replaced
+//     with live-streamed tokens (one process.stdout.write per delta).
+//   - Tools manage their own spinners; we make sure to stop ours before
+//     tool execution begins so the two don't fight for the same line.
 
-import ora from 'ora';
 import chalk from 'chalk';
 import { log } from '../utils/logger.js';
 import { generalSystemPrompt } from './prompts.js';
@@ -17,6 +18,7 @@ import { ContextManager } from './contextManager.js';
 import type { InstallManager } from '../utils/installManager.js';
 import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
 import { toolDefinitions, executeTool, type ToolName } from './tools.js';
+import { startSpinner, stopActiveSpinner } from '../utils/liveSpinner.js';
 
 const MAX_ROUNDS = 30;
 
@@ -38,7 +40,7 @@ interface CreditInfo {
   remainingCredits: number;
 }
 
-// ─── Anthropic SSE event types (unchanged) ──────────────────────────────────
+// ─── Anthropic SSE event types ──────────────────────────────────────────────
 
 interface TextDelta {
   type: 'text_delta';
@@ -101,46 +103,6 @@ interface ToolUseBlock {
 }
 type StreamBlock = TextBlock | ToolUseBlock;
 
-// ─── Shimmer spinner ─────────────────────────────────────────────────────────
-
-const SHIMMER_CHARS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const SHIMMER_COLORS = [
-  chalk.hex('#6366f1'),
-  chalk.hex('#818cf8'),
-  chalk.hex('#a5b4fc'),
-  chalk.hex('#c7d2fe'),
-  chalk.hex('#a5b4fc'),
-  chalk.hex('#818cf8'),
-];
-
-function createShimmerSpinner(text: string) {
-  let colorIdx = 0;
-  const spinner = ora({
-    text: '',
-    spinner: { interval: 80, frames: SHIMMER_CHARS },
-    color: 'magenta',
-  });
-  const interval = setInterval(() => {
-    const color = SHIMMER_COLORS[colorIdx % SHIMMER_COLORS.length];
-    spinner.text = color(text);
-    colorIdx++;
-  }, 200);
-  spinner.start();
-  return {
-    stop: () => {
-      clearInterval(interval);
-      spinner.stop();
-    },
-    succeed: (msg?: string) => {
-      clearInterval(interval);
-      spinner.succeed(msg);
-    },
-    update: (newText: string) => {
-      text = newText;
-    },
-  };
-}
-
 // ─── Main agent loop ─────────────────────────────────────────────────────────
 
 export async function runAgent(options: AgentOptions): Promise<void> {
@@ -162,7 +124,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   const accumulated: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   let latestCreditInfo: CreditInfo = { creditsUsed: 0, remainingCredits: -1 };
 
-  // ── Updated user message — tells the model about parallel installation ──
   const userMessage =
     `You are BNA, an expert AI assistant and senior software engineer creating an app with the following description:\n\n${prompt}\n\n` +
     `The project root is: ${projectRoot}\n` +
@@ -188,6 +149,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   log.divider();
 
   const exitHandler = () => {
+    stopActiveSpinner();
     console.log();
     log.divider();
     installManager.abort();
@@ -301,9 +263,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     const assistantContent: any[] = [];
     const toolResults: any[] = [];
 
-    // Tool execution is now async (runCommand awaits install state).
-    // We execute tool calls within a round SEQUENTIALLY to keep
-    // deterministic file ordering, but the execution itself can await.
     for (const block of blocks) {
       if (block.type === 'text') {
         assistantContent.push({ type: 'text', text: block.text });
@@ -361,20 +320,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
       continue;
     }
 
-    // if (stopReason === 'max_tokens') {
-    //   log.warn('Response truncated — continuing...');
-    //   context.addToolResults([
-    //     {
-    //       type: 'tool_result',
-    //       tool_use_id: 'continuation',
-    //       content: 'Please continue where you left off.',
-    //     },
-    //   ]);
-    //   // Actually, max_tokens means no tool_use — so we need a plain user message.
-    //   // Simpler: push a text user message via a helper, OR skip compaction here.
-    //   continue;
-    // }
-
     break;
   }
 
@@ -400,7 +345,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     log.credits(latestCreditInfo.remainingCredits);
   }
 
-  log.success(chalk.bold('Generation complete!'));
+  log.success(chalk.bold('Code generation complete!'));
   console.log();
 }
 
@@ -445,8 +390,11 @@ async function readStream(
   const indexToBlock = new Map<number, StreamBlock>();
   let textStarted = false;
 
-  const spinner = createShimmerSpinner(
-    `Thinking... (round ${round + 1}/${MAX_ROUNDS})`,
+  // Live spinner while we wait for the model to start speaking.
+  // As soon as it emits any text or starts a tool, we stop the spinner
+  // and let that content take over the terminal.
+  const spinner = startSpinner(
+    chalk.hex('#a5b4fc')(`Thinking... (round ${round + 1}/${MAX_ROUNDS})`),
   );
 
   const body = response.body;
@@ -522,13 +470,19 @@ async function readStream(
                   textStarted = true;
                   console.log();
                 }
+                // Real-time token streaming — no buffering.
                 process.stdout.write(chalk.white(text));
               }
             },
             onToolStart: () => {
+              // Tool is about to execute — stop our spinner so the
+              // tool's own spinner can take over the line.
               if (!textStarted) {
                 spinner.stop();
                 textStarted = true;
+              } else {
+                // Text was streaming — add a newline before tool output
+                process.stdout.write('\n');
               }
             },
             onStopReason: (reason) => {
@@ -547,7 +501,7 @@ async function readStream(
     if (!textStarted) {
       spinner.stop();
     } else {
-      console.log();
+      process.stdout.write('\n');
     }
   }
 

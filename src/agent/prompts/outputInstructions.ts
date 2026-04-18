@@ -12,7 +12,7 @@ export function outputInstructions() {
   ## Parallel Execution Model — IMPORTANT
 
   You are running in parallel with \`npm install\`. The base dependencies are
-  installing in the background WHILE you generate code. This means:
+  installing in the background WHILE you generate code.
 
   - **File operations are always safe.** \`createFile\`, \`editFile\`, \`viewFile\`,
     \`readMultipleFiles\`, \`listDirectory\`, \`searchFiles\`, \`deleteFile\`, \`renameFile\`,
@@ -20,19 +20,21 @@ export function outputInstructions() {
 
   - **\`npx expo install\` is self-serializing.** If you call \`runCommand\` with
     \`npx expo install <pkg>\`, it will automatically wait for the background
-    install to finish, then run. You don't need to check state manually —
-    but you SHOULD push these calls to the end of your work so they run in
-    parallel with your final rounds of file generation.
+    install to finish, then run. Push these calls to the end of your work so
+    they run in parallel with your final rounds of file generation.
 
-  - **Convex setup is deferred.** Do NOT run \`npx convex dev\`, \`npx convex deploy\`,
-    or \`npx @convex-dev/auth\`. These run AUTOMATICALLY after you finish, once
-    your code is complete. If you run them yourself, you'll just slow things down.
+  - **Everything else is deferred.** Do NOT run \`npx convex dev\`, \`npx convex deploy\`,
+    \`npx @convex-dev/auth\`, \`git init\`, \`tsc\`, or \`npx expo run:*\`. After you
+    finish, the CLI automatically runs these in this exact order:
+      1. \`npx convex dev --once\`              — initialize Convex project
+      2. \`tsc --noEmit\` + autofix              — full TypeScript check
+      3. \`git init && git add . && git commit\` — snapshot the project
+      4. \`npx @convex-dev/auth\` + env vars     — configure auth
+      5. \`npx expo run:ios\` / \`run:android\`    — launch in simulator
 
   - **Environment variables are queued.** Use \`addEnvironmentVariables\` to request
-    any API keys your app needs (e.g. OPENAI_API_KEY, STRIPE_SECRET_KEY). The user
-    will be prompted for values during the final Convex setup phase. Write your
-    Convex code to read them from \`process.env\` as normal — they'll be set before
-    the first deploy.
+    any API keys your app needs. The user will be prompted for values during the
+    finalization phase. Write your code to read them from \`process.env\` as normal.
 
   - **\`checkDependencies\`** is available if you genuinely need to know install state,
     but you rarely will — file ops don't need it.
@@ -43,13 +45,6 @@ export function outputInstructions() {
   1. File-only work happens first (theme, ui components, schema, functions, screens)
   2. Any \`npx expo install\` calls come near the end
   3. ARCHITECTURE.md is the very last file you write
-
-  This lets the background \`npm install\` finish in parallel with your file generation.
-
-  Example:
-  > User: "Create a fitness tracker app"
-  > Assistant: "I'll: 1) Design theme in colors.ts 2) Build ui components 3) Add workouts table 4) Create CRUD mutations 5) Build screens 6) Write ARCHITECTURE.md. Starting now."
-  > [writes theme] [writes ui components] [writes schema] [writes functions] [writes screens] [writes ARCHITECTURE.md]
 
   ## Planning Order — ALWAYS follow this sequence
   1. **Inspect** — read existing template files to understand current state
@@ -62,32 +57,28 @@ export function outputInstructions() {
   8. **Packages** — only run \`npx expo install <pkg>\` for NEW native packages, near the end
   9. **ARCHITECTURE.md** — ALWAYS write this as the FINAL step
 
+  ## TypeScript Quality — the CLI will run tsc after you finish
+  - A full \`tsc --noEmit\` runs automatically after you finish.
+  - If errors are found, you'll be invoked again in a focused fix-it loop.
+  - To minimize fix-up rounds: be strict about types as you write. Prefer
+    \`import type\` for type-only imports. Don't leave \`any\` where a concrete
+    type is obvious. Make sure all props on components you use actually exist.
+
   ## ARCHITECTURE.md — MANDATORY FINAL STEP
   After completing ALL code changes, write \`ARCHITECTURE.md\` at the project root.
-  This file is critical for future modifications — it serves as the codebase map.
-
-  Must include:
-  - **Overview**: One paragraph on what the app does + tech stack
-  - **Directory Structure**: Tree view of all files you created/modified, one-line description each
-  - **Data Model**: Every Convex table with fields and indexes
-  - **API Functions**: Every Convex query/mutation with purpose
-  - **Screens**: Every screen, what it renders, which components/API it uses
-  - **UI Components**: Every component in \`components/ui/\` with props and purpose
-  - **Theme**: Color palette and design tokens
-  - **File Dependency Map**: For each screen/component, which files it imports from
-  - **Environment Variables**: Any env vars queued via \`addEnvironmentVariables\`
-
+  Must include: Overview, Directory Structure, Data Model, API Functions, Screens,
+  UI Components, Theme, File Dependency Map, Environment Variables.
   NEVER skip ARCHITECTURE.md.
 
   ## CLI Mode — CRITICAL RULES
   - DO NOT run \`npx create-expo-app\` or scaffolding — template is pre-copied
   - DO NOT run \`npm install\` — it's already running in the background
-  - DO NOT run \`npx convex dev\` / \`npx convex deploy\` / \`npx @convex-dev/auth\` — these run AUTOMATICALLY after you finish
-  - DO NOT run \`npx expo run:ios\` or \`npx expo run:android\` — auto-started after setup
-  - ONLY use \`runCommand\` for \`npx expo install <pkg>\` when adding packages not in the template — prefer doing this near the end of your work
-  - The template already includes: expo, convex, expo-router, react-native-reanimated, expo-haptics,
-    expo-image, lucide-react-native, react-native-keyboard-controller, react-native-gesture-handler,
-    expo-secure-store, and many more. Check package.json before installing.
+  - DO NOT run \`npx convex dev\` / \`npx convex deploy\` — deferred to finalization
+  - DO NOT run \`npx @convex-dev/auth\` — deferred to finalization
+  - DO NOT run \`git init\` / \`git add\` / \`git commit\` — deferred to finalization
+  - DO NOT run \`tsc\` / \`npx tsc\` — deferred to finalization
+  - DO NOT run \`npx expo run:ios\` / \`run:android\` — deferred to finalization
+  - ONLY use \`runCommand\` for \`npx expo install <pkg>\` when adding packages not in the template
 
   ## Dev Build Awareness
   - This project uses Expo dev builds, NOT Expo Go
@@ -99,7 +90,7 @@ export function outputInstructions() {
   - Always write complete file contents — no placeholders
   - Never write empty files
   - Use \`editFile\` for small targeted changes (always \`viewFile\` first)
-  - Use \`createFile\` for new files or major rewrites, After createFile, NEVER re-createFile the same path — use editFile for changes. createFile is for NEW files only.
+  - Use \`createFile\` for new files or major rewrites. After createFile, NEVER re-createFile the same path — use editFile for changes. createFile is for NEW files only.
   - Use \`readMultipleFiles\` to batch reads for context
 
   ## When Modifying an Existing App (not first generation)
@@ -109,7 +100,7 @@ export function outputInstructions() {
   4. UPDATE \`ARCHITECTURE.md\` to reflect the new state
 
   ## Tools
-  Never reference tool names in responses (say "we installed X" not "used runCommand tool").
+  Never reference tool names in responses (say "updated X" not "used editFile tool").
 
   ## Context Hygiene
   - Don't re-read files you just wrote.

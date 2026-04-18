@@ -2,15 +2,15 @@
 //
 // Manages background dependency installation while the AI agent runs in parallel.
 //
-// Key design:
-//   - `npm install` starts immediately after template copy (non-blocking)
-//   - Agent runs concurrently, writing files (which doesn't need deps)
-//   - When agent calls `runCommand` (e.g. `npx expo install <pkg>`), it awaits
-//     the base install first, then runs the new-package install serialized
-//     behind a mutex so we don't get npm lockfile conflicts.
-//   - Status is polled/awaited rather than event-based so we stay simple.
-//
-// States: 'pending' | 'installing' | 'ready' | 'failed'
+// Streaming additions:
+//   - runDependentCommand accepts an `onLine` callback so callers can stream
+//     stdout/stderr to the terminal in real time (via their spinner).
+//   - runDependentCommand accepts an `onStart` callback that fires when the
+//     command actually begins running (i.e. base install has finished and
+//     our serialized slot has opened), so the UI can flip from "waiting"
+//     to "running".
+//   - The base npm install progress is surfaced through the Phase 2 banner
+//     and an optional onLine stream if callers want it.
 
 import { spawn, type ChildProcess } from 'child_process';
 import { log } from './logger.js';
@@ -32,19 +32,30 @@ export class InstallManager {
   private baseProc: ChildProcess | null = null;
   private startedAt = 0;
   private finishedAt = 0;
-  /** Set when .abort() is called so close-handlers don't retry after a kill. */
   private aborted = false;
+  /** Listeners for base install progress lines. */
+  private baseLineListeners = new Set<(line: string) => void>();
 
   constructor(private projectRoot: string) {}
 
-  /**
-   * Start the base `npm install` in the background.
-   * Returns immediately — does NOT await completion.
-   * Stdout/stderr are captured (not piped to terminal) so they don't collide
-   * with the streaming agent output.
-   */
+  /** Subscribe to live stdout/stderr lines from the base npm install. */
+  onBaseInstallLine(listener: (line: string) => void): () => void {
+    this.baseLineListeners.add(listener);
+    return () => this.baseLineListeners.delete(listener);
+  }
+
+  private emitBaseLine(line: string): void {
+    for (const l of this.baseLineListeners) {
+      try {
+        l(line);
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
   startBaseInstall(): void {
-    if (this.basePromise) return; // idempotent
+    if (this.basePromise) return;
 
     this.status = 'installing';
     this.startedAt = Date.now();
@@ -60,11 +71,40 @@ export class InstallManager {
       this.baseProc = proc;
 
       let stderrBuf = '';
+      let stdoutLineBuf = '';
+      let stderrLineBuf = '';
+
+      const flushLines = (
+        buf: string,
+        chunk: string,
+      ): { remainder: string; lines: string[] } => {
+        const combined = buf + chunk;
+        const parts = combined.split('\n');
+        const remainder = parts.pop() ?? '';
+        return { remainder, lines: parts };
+      };
+
+      proc.stdout?.on('data', (chunk) => {
+        const { remainder, lines } = flushLines(
+          stdoutLineBuf,
+          chunk.toString(),
+        );
+        stdoutLineBuf = remainder;
+        for (const line of lines) {
+          const trimmed = line.trimEnd();
+          if (trimmed) this.emitBaseLine(trimmed);
+        }
+      });
+
       proc.stderr?.on('data', (chunk) => {
-        // Only keep the tail — npm stderr can be huge
-        stderrBuf += chunk.toString();
-        if (stderrBuf.length > 8192) {
-          stderrBuf = stderrBuf.slice(-4096);
+        const text = chunk.toString();
+        stderrBuf += text;
+        if (stderrBuf.length > 8192) stderrBuf = stderrBuf.slice(-4096);
+        const { remainder, lines } = flushLines(stderrLineBuf, text);
+        stderrLineBuf = remainder;
+        for (const line of lines) {
+          const trimmed = line.trimEnd();
+          if (trimmed) this.emitBaseLine(trimmed);
         }
       });
 
@@ -88,7 +128,6 @@ export class InstallManager {
             durationMs: this.finishedAt - this.startedAt,
           });
         } else if (this.aborted) {
-          // User aborted — don't retry
           this.status = 'failed';
           this.baseError = 'aborted by user';
           resolve({
@@ -97,7 +136,6 @@ export class InstallManager {
             durationMs: this.finishedAt - this.startedAt,
           });
         } else {
-          // Retry once with --legacy-peer-deps on failure
           this.retryWithLegacyPeerDeps(stderrBuf).then(resolve);
         }
       });
@@ -125,9 +163,28 @@ export class InstallManager {
 
       this.baseProc = proc;
       let stderrBuf = '';
+      let stdoutLineBuf = '';
+      let stderrLineBuf = '';
+
+      const emitLines = (buf: string, chunk: string): string => {
+        const combined = buf + chunk;
+        const parts = combined.split('\n');
+        const remainder = parts.pop() ?? '';
+        for (const line of parts) {
+          const trimmed = line.trimEnd();
+          if (trimmed) this.emitBaseLine(trimmed);
+        }
+        return remainder;
+      };
+
+      proc.stdout?.on('data', (c) => {
+        stdoutLineBuf = emitLines(stdoutLineBuf, c.toString());
+      });
       proc.stderr?.on('data', (c) => {
-        stderrBuf += c.toString();
+        const text = c.toString();
+        stderrBuf += text;
         if (stderrBuf.length > 8192) stderrBuf = stderrBuf.slice(-4096);
+        stderrLineBuf = emitLines(stderrLineBuf, text);
       });
 
       proc.on('close', (code) => {
@@ -160,18 +217,10 @@ export class InstallManager {
     });
   }
 
-  /**
-   * Current snapshot of the install state. Cheap — no waiting.
-   * The agent can check this to decide whether to defer `runCommand`.
-   */
   getStatus(): InstallStatus {
     return this.status;
   }
 
-  /**
-   * Human-readable progress summary for the agent.
-   * Used to feed install state into tool results so the model can reason about it.
-   */
   getStatusSummary(): string {
     const elapsed = this.startedAt
       ? Math.round(((this.finishedAt || Date.now()) - this.startedAt) / 1000)
@@ -189,10 +238,6 @@ export class InstallManager {
     }
   }
 
-  /**
-   * Await the base install — blocks until it's done (success or failure).
-   * Safe to call multiple times; always resolves with the same result.
-   */
   async awaitBaseInstall(): Promise<InstallResult> {
     if (!this.basePromise) {
       throw new Error('Base install was never started');
@@ -201,19 +246,19 @@ export class InstallManager {
   }
 
   /**
-   * Run a serialized install command (e.g. `npx expo install expo-camera`).
-   * - Awaits the base install first
-   * - Queues behind any previous serialized installs via a mutex so we
-   *   never have two npm processes mutating node_modules at once
-   * - Returns stdout/stderr for the agent to consume
+   * Run a serialized dependent command (e.g. `npx expo install expo-camera`).
+   *
+   * @param command  Shell command to run
+   * @param timeoutMs  Kill the command after this long
+   * @param onLine  Called for each complete line of stdout/stderr
+   * @param onStart  Called once the command actually starts (post-wait)
    */
   async runDependentCommand(
     command: string,
     timeoutMs = 180_000,
+    onLine?: (line: string) => void,
+    onStart?: () => void,
   ): Promise<{ ok: boolean; output: string }> {
-    // Wait for base install to finish before running any npm/npx command.
-    // If the base install failed, we still try — the user might have a
-    // partially-populated node_modules that works for simple additions.
     const baseResult = await this.awaitBaseInstall();
     if (!baseResult.ok) {
       return {
@@ -222,8 +267,14 @@ export class InstallManager {
       };
     }
 
-    // Serialize via mutex
     const run = async () => {
+      if (onStart) {
+        try {
+          onStart();
+        } catch {
+          /* noop */
+        }
+      }
       return new Promise<{ ok: boolean; output: string }>((resolve) => {
         const proc = spawn(command, {
           cwd: this.projectRoot,
@@ -232,28 +283,59 @@ export class InstallManager {
           env: { ...process.env, FORCE_COLOR: '0', CI: '1' },
         });
 
-        let stdout = '';
-        let stderr = '';
+        let captured = '';
+        let stdoutBuf = '';
+        let stderrBuf = '';
+
+        const emit = (buf: string, chunk: string): string => {
+          const combined = buf + chunk;
+          const parts = combined.split('\n');
+          const remainder = parts.pop() ?? '';
+          for (const line of parts) {
+            const trimmed = line.trimEnd();
+            if (!trimmed) continue;
+            if (onLine) {
+              try {
+                onLine(trimmed);
+              } catch {
+                /* noop */
+              }
+            }
+          }
+          return remainder;
+        };
+
         proc.stdout?.on('data', (c) => {
-          stdout += c.toString();
-          if (stdout.length > 16384) stdout = stdout.slice(-8192);
+          const text = c.toString();
+          captured += text;
+          if (captured.length > 32_000) captured = captured.slice(-16_000);
+          stdoutBuf = emit(stdoutBuf, text);
         });
         proc.stderr?.on('data', (c) => {
-          stderr += c.toString();
-          if (stderr.length > 16384) stderr = stderr.slice(-8192);
+          const text = c.toString();
+          captured += text;
+          if (captured.length > 32_000) captured = captured.slice(-16_000);
+          stderrBuf = emit(stderrBuf, text);
         });
 
         const timer = setTimeout(() => {
-          proc.kill('SIGTERM');
+          if (onLine) onLine('(timeout — killing process)');
+          try {
+            proc.kill('SIGTERM');
+          } catch {
+            /* noop */
+          }
         }, timeoutMs);
 
         proc.on('close', (code) => {
           clearTimeout(timer);
-          const combined = (stdout + (stderr ? '\n' + stderr : '')).trim();
+          // Flush trailing partial lines
+          if (stdoutBuf.trim() && onLine) onLine(stdoutBuf.trim());
+          if (stderrBuf.trim() && onLine) onLine(stderrBuf.trim());
           resolve({
             ok: code === 0,
             output:
-              combined ||
+              captured.trim() ||
               (code === 0
                 ? '(command completed)'
                 : `command exited with ${code}`),
@@ -268,13 +350,10 @@ export class InstallManager {
     };
 
     const next = this.mutex.then(run, run);
-    this.mutex = next.catch(() => undefined); // don't let rejection poison the chain
+    this.mutex = next.catch(() => undefined);
     return next;
   }
 
-  /**
-   * Kill any in-flight install. Used by SIGINT handlers.
-   */
   abort(): void {
     this.aborted = true;
     if (this.baseProc && !this.baseProc.killed) {
@@ -286,10 +365,6 @@ export class InstallManager {
     }
   }
 
-  /**
-   * Print a one-line status marker — called from the command layer
-   * so the user sees what's happening without cluttering agent output.
-   */
   printReadyBanner(): void {
     if (this.status === 'ready') {
       const seconds = Math.round((this.finishedAt - this.startedAt) / 1000);

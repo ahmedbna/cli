@@ -2,23 +2,25 @@
 //
 // Tool definitions and executors for the CLI agent.
 //
-// Parallelism change:
-//   - `runCommand` now routes npm/npx/yarn/pnpm commands through the
-//     InstallManager so they're serialized behind the base `npm install`
-//     and behind each other. This lets the agent run in parallel with
-//     dependency installation without creating lockfile conflicts.
-//   - All other tools (filesystem, docs) remain synchronous.
+// Streaming model:
+//   - Every action shows a LIVE spinner that ticks continuously while the
+//     underlying work runs — no more busy-waits, no more silent periods.
+//   - Long-running commands (npm install, npx expo install) stream their
+//     stdout/stderr to the terminal in real time as dim lines, so the user
+//     sees exactly what's happening.
+//   - File contents are NEVER dumped to the terminal. Only filenames,
+//     line counts, and status labels are shown.
 
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import chalk, { type ChalkInstance } from 'chalk';
 import { z } from 'zod';
 import { readSkill, readSkills, getSkillNames } from './skills.js';
 import type { InstallManager } from '../utils/installManager.js';
+import { startSpinner, type LiveSpinner } from '../utils/liveSpinner.js';
 
 // ─── Execution context ───────────────────────────────────────────────────────
-// Passed into executeTool so tools can access shared runtime state.
 
 export interface ToolContext {
   projectRoot: string;
@@ -105,7 +107,6 @@ export const AddEnvironmentVariablesSchema = z.object({
   envVarNames: z.array(z.string()),
 });
 
-// New tool — lets the agent explicitly check install state when it matters.
 export const CheckDependenciesSchema = z.object({});
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
@@ -188,9 +189,7 @@ export const toolDefinitions = [
   ),
 ];
 
-// ─── Queued environment variables (processed post-agent) ─────────────────────
-// The agent accumulates env var requests here; the command layer reads them
-// after the agent finishes to display instructions during Convex setup.
+// ─── Queued environment variables ───────────────────────────────────────────
 
 const pendingEnvVars = new Set<string>();
 
@@ -202,48 +201,23 @@ export function clearPendingEnvVars(): void {
   pendingEnvVars.clear();
 }
 
-// ─── Shimmer animation ───────────────────────────────────────────────────────
+// ─── Action label helpers ───────────────────────────────────────────────────
 
-const SHIMMER_FRAMES = ['░', '▒', '▓', '█', '▓', '▒'];
+type ActionKind =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'rename'
+  | 'run'
+  | 'docs'
+  | 'env'
+  | 'queue'
+  | 'read'
+  | 'search'
+  | 'list';
 
-function shimmerText(text: string, color: ChalkInstance): void {
-  const frames = SHIMMER_FRAMES;
-  const totalFrames = frames.length * 2;
-  let frame = 0;
-
-  const interval = setInterval(() => {
-    const shimmer = frames[frame % frames.length];
-    process.stdout.write(
-      `\r  ${color(shimmer)} ${color(text)} ${color(shimmer)}`,
-    );
-    frame++;
-    if (frame >= totalFrames) {
-      clearInterval(interval);
-      process.stdout.write(`\r  ${color('✓')} ${color(text)}   \n`);
-    }
-  }, 60);
-
-  const waitMs = totalFrames * 60 + 20;
-  const start = Date.now();
-  while (Date.now() - start < waitMs) {
-    /* busy-wait to keep the animation visible */
-  }
-}
-
-function showActionLabel(
-  action:
-    | 'create'
-    | 'update'
-    | 'delete'
-    | 'rename'
-    | 'run'
-    | 'docs'
-    | 'env'
-    | 'queue',
-  filePath: string,
-  lines?: number,
-): void {
-  const labels: Record<string, { verb: string; color: ChalkInstance }> = {
+const ACTION_STYLE: Record<ActionKind, { verb: string; color: ChalkInstance }> =
+  {
     create: { verb: 'Creating', color: chalk.green },
     update: { verb: 'Updating', color: chalk.yellow },
     delete: { verb: 'Removing', color: chalk.red },
@@ -252,13 +226,24 @@ function showActionLabel(
     docs: { verb: 'Loading skill', color: chalk.cyan },
     env: { verb: 'Queued env var', color: chalk.hex('#f59e0b') },
     queue: { verb: 'Queued (deps)', color: chalk.dim },
+    read: { verb: 'Reading', color: chalk.blue },
+    search: { verb: 'Searching', color: chalk.blue },
+    list: { verb: 'Listing', color: chalk.blue },
   };
 
-  const { verb, color } = labels[action];
-  const lineInfo = lines ? chalk.dim(` (${lines} lines)`) : '';
-  const label = `${verb} ${chalk.cyan(filePath)}${lineInfo}`;
+function actionLabel(kind: ActionKind, target: string, extra?: string): string {
+  const { verb, color } = ACTION_STYLE[kind];
+  const tail = extra ? chalk.dim(` ${extra}`) : '';
+  return `${color(verb)} ${chalk.cyan(target)}${tail}`;
+}
 
-  shimmerText(label, color);
+/** Print a clean completion line for fast synchronous work. */
+function quickAction(kind: ActionKind, target: string, extra?: string): void {
+  const { verb, color } = ACTION_STYLE[kind];
+  const tail = extra ? chalk.dim(` ${extra}`) : '';
+  process.stdout.write(
+    `  ${color('✓')} ${color(verb)} ${chalk.cyan(target)}${tail}\n`,
+  );
 }
 
 // ─── Filesystem Tool Executors ───────────────────────────────────────────────
@@ -272,10 +257,30 @@ export function executeCreateFile(
   fs.mkdirSync(dir, { recursive: true });
 
   const existed = fs.existsSync(fullPath);
-  fs.writeFileSync(fullPath, args.content, 'utf-8');
-
   const lines = args.content.split('\n').length;
-  showActionLabel(existed ? 'update' : 'create', args.filePath, lines);
+
+  // Live spinner while we write — gives the user continuous feedback even
+  // on big files. Writes are usually instant but the user SEES them happen.
+  const spinner = startSpinner(
+    actionLabel(
+      existed ? 'update' : 'create',
+      args.filePath,
+      `(${lines} lines)`,
+    ),
+  );
+  try {
+    fs.writeFileSync(fullPath, args.content, 'utf-8');
+    spinner.succeed(
+      actionLabel(
+        existed ? 'update' : 'create',
+        args.filePath,
+        `(${lines} lines)`,
+      ),
+    );
+  } catch (err) {
+    spinner.fail(`Failed to write ${args.filePath}`);
+    throw err;
+  }
 
   return `Successfully ${existed ? 'updated' : 'created'} ${args.filePath} (${lines} lines)`;
 }
@@ -299,23 +304,103 @@ export function executeEditFile(
     return `Error: The specified text appears ${occurrences} times in ${args.filePath}. It must be unique.`;
   }
 
-  const newContent = content.replace(args.oldText, args.newText);
-  fs.writeFileSync(fullPath, newContent, 'utf-8');
-
   const oldLines = args.oldText.split('\n').length;
   const newLines = args.newText.split('\n').length;
-  showActionLabel('update', args.filePath);
-  if (oldLines !== newLines) {
-    console.log(chalk.dim(`    ${oldLines} lines → ${newLines} lines`));
+  const extra =
+    oldLines !== newLines ? `(${oldLines}→${newLines} lines)` : undefined;
+
+  const spinner = startSpinner(actionLabel('update', args.filePath, extra));
+  try {
+    const newContent = content.replace(args.oldText, args.newText);
+    fs.writeFileSync(fullPath, newContent, 'utf-8');
+    spinner.succeed(actionLabel('update', args.filePath, extra));
+  } catch (err) {
+    spinner.fail(`Failed to edit ${args.filePath}`);
+    throw err;
   }
+
   return `Successfully edited ${args.filePath}`;
 }
 
-// ─── runCommand — routed through InstallManager for npm-family commands ─────
+// ─── runCommand — streams output live, no buffering ─────────────────────────
 
 function isNpmFamily(cmd: string): boolean {
   const trimmed = cmd.trim();
   return /^(npm|npx|yarn|pnpm|bun(?:x)?)\b/.test(trimmed);
+}
+
+/**
+ * Spawn a command and stream its stdout/stderr live to the terminal as
+ * dim indented lines. Also captures the full output for the tool-result
+ * return value. The user sees progress continuously — no silent periods.
+ */
+async function spawnWithLiveOutput(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  spinner: LiveSpinner,
+): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(command, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      env: { ...process.env, FORCE_COLOR: '0', CI: '1' },
+    });
+
+    let captured = '';
+    let lineBuf = '';
+
+    const handleChunk = (chunk: Buffer) => {
+      const text = chunk.toString();
+      captured += text;
+      // Cap captured output so tool-result stays reasonable
+      if (captured.length > 32_000) captured = captured.slice(-16_000);
+
+      lineBuf += text;
+      const parts = lineBuf.split('\n');
+      lineBuf = parts.pop() ?? '';
+
+      for (const rawLine of parts) {
+        const line = rawLine.trimEnd();
+        if (!line) continue;
+        // Route live progress through the spinner so it renders cleanly
+        // above the animated spinner line.
+        spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(line));
+      }
+    };
+
+    proc.stdout?.on('data', handleChunk);
+    proc.stderr?.on('data', handleChunk);
+
+    const timer = setTimeout(() => {
+      spinner.writeAbove(chalk.red('    │ (timeout — killing process)'));
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        /* noop */
+      }
+    }, timeoutMs);
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, output: `spawn error: ${err.message}` });
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      // Flush any trailing partial line
+      if (lineBuf.trim()) {
+        spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(lineBuf.trim()));
+      }
+      resolve({
+        ok: code === 0,
+        output:
+          captured.trim() ||
+          (code === 0 ? '(command completed)' : `command exited with ${code}`),
+      });
+    });
+  });
 }
 
 export async function executeRunCommand(
@@ -324,100 +409,75 @@ export async function executeRunCommand(
 ): Promise<string> {
   const timeoutMs = args.timeout ?? 180_000;
 
-  // Route npm-family commands through the install manager.
-  // This gives us:
-  //   1. Automatic wait behind the background `npm install`
-  //   2. Serialization so we don't mutate node_modules concurrently
+  // npm-family → route through InstallManager (waits for base install,
+  // then streams output live).
   if (isNpmFamily(args.command)) {
     const status = ctx.installManager.getStatus();
+    const isWaiting = status === 'installing' || status === 'pending';
 
-    if (status === 'installing' || status === 'pending') {
-      showActionLabel('queue', args.command);
-      console.log(
-        chalk.dim('    Waiting for base dependencies to finish installing...'),
+    const spinnerLabel = isWaiting
+      ? actionLabel('queue', args.command, '(waiting for base install)')
+      : actionLabel('run', args.command);
+
+    const spinner = startSpinner(spinnerLabel);
+
+    try {
+      const result = await ctx.installManager.runDependentCommand(
+        args.command,
+        timeoutMs,
+        // Live streaming callback — every line from the child process
+        // gets written above the spinner in real time.
+        (line) => spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(line)),
+        // Status change callback — when the base install finishes and
+        // our queued command actually starts, update the spinner text.
+        () => spinner.update(actionLabel('run', args.command)),
       );
-    } else {
-      showActionLabel('run', args.command);
-    }
 
-    const result = await ctx.installManager.runDependentCommand(
-      args.command,
-      timeoutMs,
-    );
-
-    // Surface a truncated view in the terminal
-    if (result.output) {
-      const lines = result.output.split('\n');
-      if (lines.length > 10) {
-        for (const line of lines.slice(0, 3)) {
-          console.log(chalk.dim('    ') + chalk.dim(line));
-        }
-        console.log(chalk.dim(`    ... ${lines.length - 5} more lines ...`));
-        for (const line of lines.slice(-2)) {
-          console.log(chalk.dim('    ') + chalk.dim(line));
-        }
+      if (result.ok) {
+        spinner.succeed(actionLabel('run', args.command, '✓'));
       } else {
-        for (const line of lines) {
-          console.log(chalk.dim('    ') + chalk.dim(line));
-        }
+        spinner.fail(actionLabel('run', args.command, 'failed'));
       }
+
+      const out = result.output;
+      const truncated =
+        out.length > 4000
+          ? out.slice(0, 2000) + '\n...(truncated)...\n' + out.slice(-2000)
+          : out;
+      return result.ok ? truncated : `Error: ${truncated}`;
+    } catch (err: any) {
+      spinner.fail(actionLabel('run', args.command, 'failed'));
+      return `Error: ${err.message ?? 'unknown error'}`;
     }
-
-    const truncated =
-      result.output.length > 4000
-        ? result.output.slice(0, 2000) +
-          '\n...(truncated)...\n' +
-          result.output.slice(-2000)
-        : result.output;
-
-    return result.ok
-      ? truncated || '(command completed)'
-      : `Error: ${truncated}`;
   }
 
-  // Non-npm commands — run synchronously via execSync (original behaviour).
-  showActionLabel('run', args.command);
+  // Non-npm commands — stream live via spawn.
+  const spinner = startSpinner(actionLabel('run', args.command));
   try {
-    const output = execSync(args.command, {
-      cwd: ctx.projectRoot,
-      timeout: timeoutMs,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, FORCE_COLOR: '0' },
-    });
-    const trimmed = output.trim();
-    if (trimmed) {
-      const lines = trimmed.split('\n');
-      if (lines.length > 10) {
-        for (const line of lines.slice(0, 3)) {
-          console.log(chalk.dim('    ') + chalk.dim(line));
-        }
-        console.log(chalk.dim(`    ... ${lines.length - 5} more lines ...`));
-        for (const line of lines.slice(-2)) {
-          console.log(chalk.dim('    ') + chalk.dim(line));
-        }
-      } else {
-        for (const line of lines) {
-          console.log(chalk.dim('    ') + chalk.dim(line));
-        }
-      }
+    const result = await spawnWithLiveOutput(
+      args.command,
+      ctx.projectRoot,
+      timeoutMs,
+      spinner,
+    );
+    if (result.ok) {
+      spinner.succeed(actionLabel('run', args.command, '✓'));
+    } else {
+      spinner.fail(actionLabel('run', args.command, 'failed'));
     }
-    return trimmed.length > 4000
-      ? trimmed.slice(0, 2000) + '\n...(truncated)...\n' + trimmed.slice(-2000)
-      : trimmed || '(command completed with no output)';
+    const out = result.output;
+    const truncated =
+      out.length > 4000
+        ? out.slice(0, 2000) + '\n...(truncated)...\n' + out.slice(-2000)
+        : out;
+    return result.ok ? truncated : `Error: ${truncated}`;
   } catch (err: any) {
-    const stderr = err.stderr?.toString() ?? '';
-    const stdout = err.stdout?.toString() ?? '';
-    const combined = (stdout + '\n' + stderr).trim();
-    if (combined) {
-      const lines = combined.split('\n').slice(-5);
-      for (const line of lines) {
-        console.log(chalk.red('    ') + line);
-      }
-    }
-    return `Error (exit ${err.status ?? '?'}): ${combined.slice(0, 4000)}`;
+    spinner.fail(actionLabel('run', args.command, 'failed'));
+    return `Error: ${err.message ?? 'unknown error'}`;
   }
 }
+
+// ─── Read-only tools ────────────────────────────────────────────────────────
 
 export function executeViewFile(
   projectRoot: string,
@@ -430,12 +490,17 @@ export function executeViewFile(
   if (stat.isDirectory()) {
     return `Error: ${args.filePath} is a directory, use listDirectory instead`;
   }
+
+  const spinner = startSpinner(actionLabel('read', args.filePath));
   const content = fs.readFileSync(fullPath, 'utf-8');
   const lines = content.split('\n');
   const start = (args.startLine ?? 1) - 1;
   const end =
     args.endLine === -1 ? lines.length : (args.endLine ?? lines.length);
   const slice = lines.slice(Math.max(0, start), end);
+  spinner.succeed(
+    actionLabel('read', args.filePath, `(${slice.length} lines)`),
+  );
   return slice.map((line, i) => `${start + i + 1}: ${line}`).join('\n');
 }
 
@@ -452,10 +517,13 @@ export function executeListDirectory(
     'android',
     '.DS_Store',
   ]);
-  const fullPath = path.resolve(projectRoot, args.dirPath ?? '.');
+  const dirPath = args.dirPath ?? '.';
+  const fullPath = path.resolve(projectRoot, dirPath);
   if (!fs.existsSync(fullPath)) {
-    return `Error: Directory not found: ${args.dirPath ?? '.'}`;
+    return `Error: Directory not found: ${dirPath}`;
   }
+
+  const spinner = startSpinner(actionLabel('list', dirPath));
 
   function listDir(dir: string, depth: number, maxDepth: number): string[] {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -474,6 +542,7 @@ export function executeListDirectory(
 
   const maxDepth = args.recursive ? 2 : 0;
   const result = listDir(fullPath, 0, maxDepth);
+  spinner.succeed(actionLabel('list', dirPath, `(${result.length} entries)`));
   return 'Directory:\n' + result.join('\n');
 }
 
@@ -484,10 +553,12 @@ export function executeDeleteFile(
   const fullPath = path.resolve(projectRoot, args.filePath);
   if (!fs.existsSync(fullPath))
     return `Error: File not found: ${args.filePath}`;
+
+  const spinner = startSpinner(actionLabel('delete', args.filePath));
   const stat = fs.statSync(fullPath);
   if (stat.isDirectory()) fs.rmdirSync(fullPath);
   else fs.unlinkSync(fullPath);
-  showActionLabel('delete', args.filePath);
+  spinner.succeed(actionLabel('delete', args.filePath));
   return `Successfully deleted ${args.filePath}`;
 }
 
@@ -500,37 +571,61 @@ export function executeRenameFile(
   if (!fs.existsSync(srcFull)) {
     return `Error: Source file not found: ${args.oldPath}`;
   }
+  const label = `${args.oldPath} → ${args.newPath}`;
+  const spinner = startSpinner(actionLabel('rename', label));
   fs.mkdirSync(path.dirname(destFull), { recursive: true });
   fs.renameSync(srcFull, destFull);
-  showActionLabel('rename', `${args.oldPath} → ${args.newPath}`);
+  spinner.succeed(actionLabel('rename', label));
   return `Successfully renamed ${args.oldPath} → ${args.newPath}`;
 }
 
-export function executeSearchFiles(
+export async function executeSearchFiles(
   projectRoot: string,
   args: z.infer<typeof SearchFilesSchema>,
-): string {
+): Promise<string> {
   const maxResults = args.maxResults ?? 20;
-  try {
+  const spinner = startSpinner(actionLabel('search', args.pattern));
+
+  return new Promise<string>((resolve) => {
     const globFlag = args.fileGlob ? `--include="${args.fileGlob}"` : '';
     const cmd = `grep -rn ${globFlag} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.expo --exclude-dir=_generated --exclude-dir=ios --exclude-dir=android -m ${maxResults} "${args.pattern.replace(/"/g, '\\"')}" . 2>/dev/null || true`;
-    const output = execSync(cmd, {
+    const proc = spawn(cmd, {
       cwd: projectRoot,
-      encoding: 'utf-8',
-      timeout: 15_000,
-    }).trim();
-    if (!output) return `No matches found for "${args.pattern}"`;
-    const lines = output.split('\n').slice(0, maxResults);
-    return `Found ${lines.length} match(es):\n` + lines.join('\n');
-  } catch {
-    return `Search failed for pattern "${args.pattern}".`;
-  }
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    proc.stdout?.on('data', (c) => {
+      out += c.toString();
+      if (out.length > 32_000) out = out.slice(-16_000);
+    });
+    proc.on('close', () => {
+      const trimmed = out.trim();
+      if (!trimmed) {
+        spinner.succeed(actionLabel('search', args.pattern, '(no matches)'));
+        resolve(`No matches found for "${args.pattern}"`);
+        return;
+      }
+      const lines = trimmed.split('\n').slice(0, maxResults);
+      spinner.succeed(
+        actionLabel('search', args.pattern, `(${lines.length} matches)`),
+      );
+      resolve(`Found ${lines.length} match(es):\n` + lines.join('\n'));
+    });
+    proc.on('error', () => {
+      spinner.fail(actionLabel('search', args.pattern, 'failed'));
+      resolve(`Search failed for pattern "${args.pattern}".`);
+    });
+  });
 }
 
 export function executeReadMultipleFiles(
   projectRoot: string,
   args: z.infer<typeof ReadMultipleFilesSchema>,
 ): string {
+  const spinner = startSpinner(
+    actionLabel('read', `${args.filePaths.length} files`),
+  );
   const results: string[] = [];
   for (const filePath of args.filePaths) {
     const fullPath = path.resolve(projectRoot, filePath);
@@ -548,6 +643,7 @@ export function executeReadMultipleFiles(
     const numbered = lines.map((line, i) => `${i + 1}: ${line}`).join('\n');
     results.push(`--- ${filePath} (${lines.length} lines) ---\n${numbered}`);
   }
+  spinner.succeed(actionLabel('read', `${args.filePaths.length} files`, '✓'));
   return results.join('\n\n');
 }
 
@@ -557,8 +653,7 @@ export function executeAddEnvironmentVariables(
   for (const name of args.envVarNames) {
     pendingEnvVars.add(name);
   }
-  showActionLabel('env', args.envVarNames.join(', '));
-
+  quickAction('env', args.envVarNames.join(', '));
   return (
     `Queued ${args.envVarNames.length} environment variable(s): ${args.envVarNames.join(', ')}.\n\n` +
     `These will be set on the Convex deployment AFTER you finish generating code, during the final setup phase. ` +
@@ -598,7 +693,9 @@ export async function executeTool(
       return executeReadMultipleFiles(ctx.projectRoot, toolInput as any);
     case 'lookupDocs': {
       const args = toolInput as z.infer<typeof LookupDocsSchema>;
-      for (const skill of args.skills) showActionLabel('docs', skill);
+      for (const skill of args.skills) {
+        quickAction('docs', skill);
+      }
       if (args.skills.length === 1) return readSkill(args.skills[0]);
       return readSkills(args.skills);
     }
