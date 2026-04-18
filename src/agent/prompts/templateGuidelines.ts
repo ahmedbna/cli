@@ -47,7 +47,7 @@ export const templateGuidelines = () => stripIndents`
 
   ## Critical Rules
   1. Plan first — inspect template → theme → ui components → schema → functions → screens → ARCHITECTURE.md.
-  2. Colors — ALWAYS use theme colors via \`useColor\` hook. NEVER hardcode hex/rgb.
+  2. Colors — ALWAYS use theme colors via \`useColor\` hook. NEVER hardcode hex/rgb. Avoid using purple and blue or purple gradient — they look generic and default. Instead, choose colors that fit the app's unique identity.
   3. Locked files — NEVER modify: \`convex/auth.config.ts\`.
   4. Native rebuilds — warn user when a native rebuild is required after installing a new native module.
   5. Unique identity — every app gets its own palette and component style.
