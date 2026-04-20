@@ -16,7 +16,13 @@ import path from 'path';
 import { spawn } from 'child_process';
 import chalk, { type ChalkInstance } from 'chalk';
 import { z } from 'zod';
-import { readSkill, readSkills, getSkillNames } from './skills.js';
+import {
+  readSkill,
+  readSkills,
+  getSkillNames,
+  getSkillNamesForStack,
+  type StackId,
+} from './skills.js';
 import type { InstallManager } from '../utils/installManager.js';
 import { startSpinner, type LiveSpinner } from '../utils/liveSpinner.js';
 import { Session } from '../session/session.js';
@@ -94,18 +100,24 @@ export const ReadMultipleFilesSchema = z.object({
   filePaths: z.array(z.string()),
 });
 
-const skillNames = getSkillNames();
+function buildLookupDocsSchema(skillNames: string[]) {
+  return z.object({
+    skills: z
+      .array(z.string())
+      .min(1)
+      .max(4)
+      .describe(
+        `One or more skill names to load. Available: ${skillNames.join(', ')}. ` +
+          `Load only what you need — each skill consumes context tokens.`,
+      ),
+  });
+}
 
-export const LookupDocsSchema = z.object({
-  skills: z
-    .array(z.string())
-    .min(1)
-    .max(4)
-    .describe(
-      `One or more skill names to load. Available: ${skillNames.join(', ')}. ` +
-        `Load only what you need — each skill consumes context tokens.`,
-    ),
-});
+// Fallback schema covering every known skill — used for type inference and
+// when no stack is available. Tool definitions passed to the model are always
+// built via `buildToolDefinitions(stack)` so the agent sees only stack-relevant
+// skills.
+export const LookupDocsSchema = buildLookupDocsSchema(getSkillNames());
 
 export const AddEnvironmentVariablesSchema = z.object({
   envVarNames: z.array(z.string()),
@@ -137,61 +149,86 @@ function toolDef(name: string, description: string, schema: z.ZodType) {
   return { name, description, input_schema: rest };
 }
 
-export const toolDefinitions = [
-  toolDef(
-    'createFile',
-    'Create or overwrite a file on the local file system. This tool works IMMEDIATELY — it does not depend on npm packages being installed. Always write the complete file content.',
-    CreateFileSchema,
-  ),
-  toolDef(
-    'editFile',
-    'Replace a unique string in a file with new content. Works immediately — does not depend on npm packages.',
-    EditFileSchema,
-  ),
-  toolDef(
-    'runCommand',
-    'Execute a shell command. Dependency installs (npm/npx/yarn/pnpm) are automatically serialized behind the base `npm install` running in the background, so it is safe to call these at any time — they will just wait if needed. Use ONLY for `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr.',
-    RunCommandSchema,
-  ),
-  toolDef(
-    'viewFile',
-    'Read the contents of a file. Returns numbered lines. Works immediately.',
-    ViewFileSchema,
-  ),
-  toolDef(
-    'listDirectory',
-    'List files and directories. Filters node_modules, .git, .expo, _generated.',
-    ListDirectorySchema,
-  ),
-  toolDef('deleteFile', 'Delete a file or empty directory.', DeleteFileSchema),
-  toolDef('renameFile', 'Rename or move a file.', RenameFileSchema),
-  toolDef(
-    'searchFiles',
-    'Search for a text pattern across project files. Returns matching paths and line numbers.',
-    SearchFilesSchema,
-  ),
-  toolDef(
-    'readMultipleFiles',
-    'Read multiple files at once. More efficient than multiple viewFile calls.',
-    ReadMultipleFilesSchema,
-  ),
-  toolDef(
-    'lookupDocs',
-    'Load reference documentation for specific features. Available skills: ' +
-      skillNames.join(', '),
-    LookupDocsSchema,
-  ),
-  toolDef(
-    'addEnvironmentVariables',
-    'Queue environment variables to be set on the Convex deployment. These will be applied at the end of the run during the Convex setup phase. Use this for API keys and secrets like OPENAI_API_KEY or STRIPE_SECRET_KEY.',
-    AddEnvironmentVariablesSchema,
-  ),
-  toolDef(
-    'checkDependencies',
-    'Check whether the background `npm install` has completed. Returns the current status. You rarely need this — just call runCommand when you need to install a new package, and it will wait automatically.',
-    CheckDependenciesSchema,
-  ),
-];
+/**
+ * Build the tool definitions sent to the model.
+ *
+ * When `stack` is provided, the `lookupDocs` tool is scoped to only the
+ * skills that belong to that stack's tech buckets — the agent never sees
+ * or calls into skills irrelevant to the chosen frontend/backend.
+ */
+export const buildToolDefinitions = (stack?: StackId) => {
+  const availableSkills = stack
+    ? getSkillNamesForStack(stack)
+    : getSkillNames();
+  const lookupDocsSchema = buildLookupDocsSchema(availableSkills);
+
+  return [
+    toolDef(
+      'createFile',
+      'Create or overwrite a file on the local file system. This tool works IMMEDIATELY — it does not depend on npm packages being installed. Always write the complete file content.',
+      CreateFileSchema,
+    ),
+    toolDef(
+      'editFile',
+      'Replace a unique string in a file with new content. Works immediately — does not depend on npm packages.',
+      EditFileSchema,
+    ),
+    toolDef(
+      'runCommand',
+      'Execute a shell command. Dependency installs (npm/npx/yarn/pnpm) are automatically serialized behind the base `npm install` running in the background, so it is safe to call these at any time — they will just wait if needed. Use ONLY for `npx expo install <pkg>` when adding packages not in the template. Returns stdout + stderr.',
+      RunCommandSchema,
+    ),
+    toolDef(
+      'viewFile',
+      'Read the contents of a file. Returns numbered lines. Works immediately.',
+      ViewFileSchema,
+    ),
+    toolDef(
+      'listDirectory',
+      'List files and directories. Filters node_modules, .git, .expo, _generated.',
+      ListDirectorySchema,
+    ),
+    toolDef(
+      'deleteFile',
+      'Delete a file or empty directory.',
+      DeleteFileSchema,
+    ),
+    toolDef('renameFile', 'Rename or move a file.', RenameFileSchema),
+    toolDef(
+      'searchFiles',
+      'Search for a text pattern across project files. Returns matching paths and line numbers.',
+      SearchFilesSchema,
+    ),
+    toolDef(
+      'readMultipleFiles',
+      'Read multiple files at once. More efficient than multiple viewFile calls.',
+      ReadMultipleFilesSchema,
+    ),
+    toolDef(
+      'lookupDocs',
+      'Load reference documentation for specific features. Available skills: ' +
+        availableSkills.join(', '),
+      lookupDocsSchema,
+    ),
+    toolDef(
+      'addEnvironmentVariables',
+      'Queue environment variables to be set on the Convex deployment. These will be applied at the end of the run during the Convex setup phase. Use this for API keys and secrets like OPENAI_API_KEY or STRIPE_SECRET_KEY.',
+      AddEnvironmentVariablesSchema,
+    ),
+    toolDef(
+      'checkDependencies',
+      'Check whether the background `npm install` has completed. Returns the current status. You rarely need this — just call runCommand when you need to install a new package, and it will wait automatically.',
+      CheckDependenciesSchema,
+    ),
+  ];
+};
+
+/**
+ * Default tool definitions — covers every skill. Kept for backwards
+ * compatibility with call sites that don't have a stack available.
+ * Prefer `buildToolDefinitions(stack)` in new code.
+ */
+export const toolDefinitions = buildToolDefinitions();
 
 // ─── Queued environment variables ───────────────────────────────────────────
 

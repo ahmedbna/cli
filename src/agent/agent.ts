@@ -17,7 +17,7 @@ import { refreshAuthToken } from '../utils/auth.js';
 import { ContextManager } from './contextManager.js';
 import type { InstallManager } from '../utils/installManager.js';
 import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
-import { toolDefinitions, executeTool, type ToolName } from './tools.js';
+import { buildToolDefinitions, executeTool, type ToolName } from './tools.js';
 import { startSpinner, stopActiveSpinner } from '../utils/liveSpinner.js';
 
 const MAX_ROUNDS = 30;
@@ -121,13 +121,13 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   }
 
   const systemPrompt = generalSystemPrompt({ stack });
+  const stackToolDefinitions = buildToolDefinitions(stack);
   const accumulated: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   let latestCreditInfo: CreditInfo = { creditsUsed: 0, remainingCredits: -1 };
 
   const userMessage =
     `You are BNA, an expert AI assistant and senior software engineer creating an app with the following description:\n\n${prompt}\n\n` +
-    `The project root is: ${projectRoot}\n` +
-    `Stack: ${stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n`;
+    `The project root is: ${projectRoot}\n`;
 
   const context = new ContextManager({
     keepRecentRounds: 3,
@@ -188,7 +188,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         authToken,
         systemPrompt,
         context.getMessages(),
-        toolDefinitions,
+        stackToolDefinitions,
       );
     } catch (err: any) {
       log.error(`Network error: ${err.message ?? 'Unknown error'}`);
@@ -207,7 +207,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
             authToken,
             systemPrompt,
             context.getMessages(),
-            toolDefinitions,
+            stackToolDefinitions,
           );
         } catch (err: any) {
           log.error(`Network error after refresh: ${err.message}`);

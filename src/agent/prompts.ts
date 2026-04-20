@@ -14,6 +14,8 @@ export interface SystemPromptOptions {
   stack: 'expo' | 'expo-convex';
 }
 
+export type StackId = SystemPromptOptions['stack'];
+
 export const ROLE_SYSTEM_PROMPT = stripIndents`
 You are BNA, an expert AI assistant and senior software engineer specializing in full-stack mobile development with Expo (development builds), React Native, TypeScript, and Convex backend.
 You build production-ready iOS/Android apps using Expo dev builds (NOT Expo Go) to support native modules.
@@ -28,8 +30,8 @@ Be concise. Do not over-explain.
 IMPORTANT: You are running inside a CLI tool, in PARALLEL with dependency installation. Files are written to the REAL file system using the provided tools. There are no WebContainers or browser sandboxes.
 `;
 
-function buildCliSystemPrompt(): string {
-  const skillsCatalog = generateSkillsSummary();
+function buildCliSystemPrompt(stack: StackId): string {
+  const skillsCatalog = generateSkillsSummary(stack);
 
   return `## CLI Agent Mode — Parallel Execution
 
@@ -132,7 +134,7 @@ You do NOT need to wait for it. Start writing files immediately.
 export function generalSystemPrompt(options: SystemPromptOptions) {
   return stripIndents`
   ${ROLE_SYSTEM_PROMPT}
-  ${buildCliSystemPrompt()}
+  ${buildCliSystemPrompt(options.stack)}
   ${templateGuidelines()}
   ${convexGuidelines()}
   ${exampleDataInstructions()}

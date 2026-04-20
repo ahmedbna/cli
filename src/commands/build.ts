@@ -30,11 +30,21 @@ import { typeCheckAndFix } from '../utils/tsCheck.js';
 import { initGitRepo } from '../utils/gitInit.js';
 import { Session } from '../session/session.js';
 import { runRepl } from '../session/repl.js';
+import {
+  FRONTENDS,
+  BACKENDS,
+  combineStack,
+  isFrontend,
+  isBackend,
+  type Frontend,
+  type Backend,
+} from './stacks.js';
 
 interface GenerateOptions {
   prompt?: string;
   name?: string;
-  stack?: string;
+  frontend?: string;
+  backend?: string;
   install?: boolean;
   run?: boolean;
   skills?: string;
@@ -297,31 +307,64 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectRoot = path.resolve(cwd, projectName);
   }
 
-  // ── Stack + prompt collection ───────────────────────────────────────────
+  // ── Stack selection — frontend + backend picked separately ─────────────
 
-  let stack: 'expo' | 'expo-convex';
-  if (options.stack === 'expo') stack = 'expo';
-  else if (options.stack === 'expo-convex') stack = 'expo-convex';
-  else {
-    const stackAnswer = await inquirer.prompt([
+  let frontend: Frontend;
+  if (options.frontend) {
+    if (!isFrontend(options.frontend)) {
+      log.error(
+        `Unknown frontend "${options.frontend}". Available: ${FRONTENDS.map((f) => f.value).join(', ')}.`,
+      );
+      return;
+    }
+    frontend = options.frontend;
+  } else {
+    const { frontend: picked } = await inquirer.prompt([
       {
         type: 'list',
-        name: 'stack',
-        message: 'Choose your stack:',
-        choices: [
-          {
-            name: `${chalk.yellow('Expo + Convex')} ${chalk.dim('— Full-stack with real-time backend')}`,
-            value: 'expo-convex',
-          },
-          {
-            name: `${chalk.yellow('Expo only')} ${chalk.dim('— React Native frontend only')}`,
-            value: 'expo',
-          },
-        ],
-        default: 'expo-convex',
+        name: 'frontend',
+        message: 'Choose your frontend:',
+        choices: FRONTENDS.map((f) => ({
+          name: `${chalk.yellow(f.name)} ${chalk.dim('— ' + f.description)}`,
+          value: f.value,
+        })),
+        default: FRONTENDS[0].value,
       },
     ]);
-    stack = stackAnswer.stack;
+    frontend = picked;
+  }
+
+  let backend: Backend;
+  if (options.backend) {
+    if (!isBackend(options.backend)) {
+      log.error(
+        `Unknown backend "${options.backend}". Available: ${BACKENDS.map((b) => b.value).join(', ')}.`,
+      );
+      return;
+    }
+    backend = options.backend;
+  } else {
+    const { backend: picked } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'backend',
+        message: 'Choose your backend:',
+        choices: BACKENDS.map((b) => ({
+          name: `${chalk.yellow(b.name)} ${chalk.dim('— ' + b.description)}`,
+          value: b.value,
+        })),
+        default: BACKENDS[0].value,
+      },
+    ]);
+    backend = picked;
+  }
+
+  let stack: 'expo' | 'expo-convex';
+  try {
+    stack = combineStack(frontend, backend);
+  } catch (err: any) {
+    log.error(err.message);
+    return;
   }
 
   let prompt: string;
@@ -340,12 +383,13 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
 
   console.log();
-  log.info(`Project: ${chalk.cyan(projectName)}`);
-  log.info(`Stack:   ${chalk.cyan(stack)}`);
+  log.info(`Project:  ${chalk.cyan(projectName)}`);
+  log.info(`Frontend: ${chalk.cyan(frontend)}`);
+  log.info(`Backend:  ${chalk.cyan(backend)}`);
   log.info(
-    `Prompt:  ${chalk.cyan(prompt.length > 80 ? prompt.slice(0, 80) + '...' : prompt)}`,
+    `Prompt:   ${chalk.cyan(prompt.length > 80 ? prompt.slice(0, 80) + '...' : prompt)}`,
   );
-  log.info(`Path:    ${chalk.dim(projectRoot)}`);
+  log.info(`Path:     ${chalk.dim(projectRoot)}`);
   console.log();
 
   // ── Copy template ───────────────────────────────────────────────────────

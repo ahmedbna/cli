@@ -38,7 +38,8 @@ program
   .description('Build a full-stack mobile application')
   .option('-p, --prompt <prompt>', 'App description prompt')
   .option('-n, --name <name>', 'Project name')
-  .option('-s, --stack <stack>', 'Stack: expo | expo-convex')
+  .option('-f, --frontend <frontend>', 'Frontend: expo')
+  .option('-b, --backend <backend>', 'Backend: convex')
   .option(
     '--skills <skills>',
     'Anthropic Agent Skills to use (comma-separated: pptx,xlsx,docx,pdf or custom skill IDs)',

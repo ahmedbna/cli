@@ -1,22 +1,31 @@
 // src/agent/skills.ts
 // Skill resolver — auto-discovers individual skill folders at runtime.
 //
-// Each skill is a self-contained folder with its own SKILL.md:
-//   skills/convex-file-storage/SKILL.md
-//   skills/expo-animations/SKILL.md
-//   etc.
+// Skills are grouped by the technology they target. The directory layout is:
 //
-// The agent loads ONLY the specific skill it needs, saving tokens.
-// No more two-step "overview + reference" loading.
+//   skills/convex/convex-file-storage/SKILL.md
+//   skills/convex/convex-pagination/SKILL.md
+//   skills/expo/expo-animations/SKILL.md
+//   skills/expo/expo-routing/SKILL.md
+//   skills/supabase/...
+//
+// The parent folder (convex, expo, supabase) is the skill's `tech` tag.
+// The agent only sees skills that match the technologies in the selected
+// stack (e.g. `expo-convex` → expo + convex skills only).
 
 import fs from 'fs';
 import path from 'path';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export type StackId = 'expo' | 'expo-convex';
+export type Tech = string;
+
 export interface SkillMetadata {
   name: string;
   description: string;
+  /** Technology bucket this skill belongs to (parent folder name). */
+  tech: Tech;
   /** Absolute path to the skill directory */
   dirPath: string;
 }
@@ -25,14 +34,9 @@ export interface SkillMetadata {
 
 let cachedSkillsDir: string | null = null;
 
-/**
- * Find the skills/ directory relative to the package root.
- * Works both in development (running from repo root) and when installed as a package.
- */
 function resolveSkillsDir(): string {
   if (cachedSkillsDir) return cachedSkillsDir;
 
-  // Walk up from the current file location to find skills/
   let dir = path.dirname(new URL(import.meta.url).pathname);
   for (let i = 0; i < 5; i++) {
     const candidate = path.join(dir, 'skills');
@@ -43,7 +47,6 @@ function resolveSkillsDir(): string {
     dir = path.dirname(dir);
   }
 
-  // Try from cwd (for development)
   const cwdCandidate = path.join(process.cwd(), 'skills');
   if (fs.existsSync(cwdCandidate)) {
     cachedSkillsDir = cwdCandidate;
@@ -56,14 +59,20 @@ function resolveSkillsDir(): string {
   );
 }
 
+// ─── Stack → tech mapping ────────────────────────────────────────────────────
+
+/**
+ * Which tech buckets does a given stack include?
+ * The stack id is a frontend-backend combo; we split on `-` to get the techs.
+ */
+export function techsForStack(stack: StackId): Tech[] {
+  return stack.split('-');
+}
+
 // ─── Discover skills ─────────────────────────────────────────────────────────
 
 let cachedRegistry: Map<string, SkillMetadata> | null = null;
 
-/**
- * Parse YAML frontmatter from a SKILL.md file.
- * Extracts `name` and `description` fields.
- */
 function parseFrontmatter(
   content: string,
 ): { name: string; description: string } | null {
@@ -79,8 +88,9 @@ function parseFrontmatter(
 }
 
 /**
- * Scan the skills/ directory and build a registry of all available skills.
- * Each subdirectory with a SKILL.md is registered.
+ * Scan skills/<tech>/<skill>/SKILL.md and build a registry.
+ * Falls back to the legacy flat layout skills/<skill>/SKILL.md so older
+ * installations keep working during migration.
  */
 function discoverSkills(): Map<string, SkillMetadata> {
   if (cachedRegistry) return cachedRegistry;
@@ -88,49 +98,87 @@ function discoverSkills(): Map<string, SkillMetadata> {
   const skillsDir = resolveSkillsDir();
   const registry = new Map<string, SkillMetadata>();
 
-  const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  const topEntries = fs.readdirSync(skillsDir, { withFileTypes: true });
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  for (const top of topEntries) {
+    if (!top.isDirectory()) continue;
+    const topPath = path.join(skillsDir, top.name);
 
-    const skillMdPath = path.join(skillsDir, entry.name, 'SKILL.md');
-    if (!fs.existsSync(skillMdPath)) continue;
+    // Legacy flat layout: skills/<skill>/SKILL.md
+    const flatSkillMd = path.join(topPath, 'SKILL.md');
+    if (fs.existsSync(flatSkillMd)) {
+      const content = fs.readFileSync(flatSkillMd, 'utf-8');
+      const meta = parseFrontmatter(content);
+      if (meta) {
+        registry.set(meta.name, {
+          name: meta.name,
+          description: meta.description,
+          tech: inferTechFromName(meta.name),
+          dirPath: topPath,
+        });
+      }
+      continue;
+    }
 
-    const content = fs.readFileSync(skillMdPath, 'utf-8');
-    const meta = parseFrontmatter(content);
-    if (!meta) continue;
+    // Nested layout: skills/<tech>/<skill>/SKILL.md
+    const tech = top.name;
+    const innerEntries = fs.readdirSync(topPath, { withFileTypes: true });
+    for (const inner of innerEntries) {
+      if (!inner.isDirectory()) continue;
+      const skillMd = path.join(topPath, inner.name, 'SKILL.md');
+      if (!fs.existsSync(skillMd)) continue;
 
-    registry.set(meta.name, {
-      name: meta.name,
-      description: meta.description,
-      dirPath: path.join(skillsDir, entry.name),
-    });
+      const content = fs.readFileSync(skillMd, 'utf-8');
+      const meta = parseFrontmatter(content);
+      if (!meta) continue;
+
+      registry.set(meta.name, {
+        name: meta.name,
+        description: meta.description,
+        tech,
+        dirPath: path.join(topPath, inner.name),
+      });
+    }
   }
 
   cachedRegistry = registry;
   return registry;
 }
 
+/**
+ * Fallback for legacy flat-layout skills whose name is prefixed with the tech
+ * (e.g. `convex-file-storage`). If we can't infer, mark as `misc`.
+ */
+function inferTechFromName(name: string): Tech {
+  const prefix = name.split('-')[0];
+  if (!prefix) return 'misc';
+  return prefix;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/**
- * Get all registered skill names.
- */
 export function getSkillNames(): string[] {
   return Array.from(discoverSkills().keys());
 }
 
-/**
- * Get metadata for all skills (name + description).
- * Used to build the system prompt so the agent knows what's available.
- */
 export function getSkillMetadata(): SkillMetadata[] {
   return Array.from(discoverSkills().values());
 }
 
 /**
+ * Skills available for a given stack — filtered to the stack's tech buckets.
+ */
+export function getSkillMetadataForStack(stack: StackId): SkillMetadata[] {
+  const techs = new Set(techsForStack(stack));
+  return getSkillMetadata().filter((s) => techs.has(s.tech));
+}
+
+export function getSkillNamesForStack(stack: StackId): string[] {
+  return getSkillMetadataForStack(stack).map((s) => s.name);
+}
+
+/**
  * Read the full SKILL.md content for a specific skill.
- * This is the main executor — the agent calls this to load a skill's instructions.
  * Strips YAML frontmatter so the agent only gets the instruction body.
  */
 export function readSkill(skillName: string): string {
@@ -144,38 +192,44 @@ export function readSkill(skillName: string): string {
 
   const skillMdPath = path.join(skill.dirPath, 'SKILL.md');
   const content = fs.readFileSync(skillMdPath, 'utf-8');
-
-  // Strip YAML frontmatter — the agent only needs the instructions body
   const body = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
   return body.trim();
 }
 
-/**
- * Read multiple skills at once. More efficient for related features.
- */
 export function readSkills(skillNames: string[]): string {
   const results: string[] = [];
-
   for (const name of skillNames) {
     const content = readSkill(name);
     results.push(`## Skill: ${name}\n\n${content}`);
   }
-
   return results.join('\n\n---\n\n');
 }
 
 /**
- * Generate a compact summary of all available skills for the system prompt.
- * Only includes name + description (Level 1 metadata — always loaded, ~100 tokens per skill).
+ * Compact skills catalog for the system prompt, grouped by tech and filtered
+ * to the stack the user selected. Only includes name + description.
  */
-export function generateSkillsSummary(): string {
-  const skills = getSkillMetadata();
+export function generateSkillsSummary(stack: StackId): string {
+  const skills = getSkillMetadataForStack(stack);
 
   if (skills.length === 0) {
-    return '(No skills available)';
+    return '(No skills available for this stack)';
   }
 
-  const lines = skills.map((s) => `- **${s.name}**: ${s.description}`);
+  const byTech = new Map<Tech, SkillMetadata[]>();
+  for (const s of skills) {
+    const bucket = byTech.get(s.tech) ?? [];
+    bucket.push(s);
+    byTech.set(s.tech, bucket);
+  }
 
-  return lines.join('\n');
+  const sections: string[] = [];
+  for (const tech of techsForStack(stack)) {
+    const bucket = byTech.get(tech);
+    if (!bucket || bucket.length === 0) continue;
+    const lines = bucket.map((s) => `- **${s.name}**: ${s.description}`);
+    sections.push(`#### ${tech}\n${lines.join('\n')}`);
+  }
+
+  return sections.join('\n\n');
 }

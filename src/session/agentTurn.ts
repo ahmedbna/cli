@@ -17,7 +17,11 @@ import chalk from 'chalk';
 import { log } from '../utils/logger.js';
 import { refreshAuthToken } from '../utils/auth.js';
 import { CONVEX_SITE_URL } from '../utils/store.js';
-import { toolDefinitions, executeTool, type ToolName } from '../agent/tools.js';
+import {
+  buildToolDefinitions,
+  executeTool,
+  type ToolName,
+} from '../agent/tools.js';
 import { startSpinner } from '../utils/liveSpinner.js';
 import { askUserToolDefinition, finishToolDefinition } from './planner.js';
 import type { TurnOutcome } from './planner.js';
@@ -111,9 +115,11 @@ export async function runAgentTurn(
     session.context.addUserText(userMessage);
   }
 
-  // Assemble tools: regular tools + askUser + finish
+  // Assemble tools: regular tools (filtered to the session's stack) +
+  // askUser + finish. Skill-scoped tools like lookupDocs only see the
+  // skills for the selected frontend/backend techs.
   const allTools = [
-    ...toolDefinitions,
+    ...buildToolDefinitions(session.stack),
     askUserToolDefinition,
     finishToolDefinition,
   ];
