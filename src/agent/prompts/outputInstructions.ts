@@ -112,6 +112,54 @@ export function outputInstructions() {
   - \`components/auth/singout.tsx\` — only style/theme colors
   - \`convex/auth.config.ts\` — never modify
   - \`convex/auth.ts\` — never modify (except style of loggedInUser if needed)
+
+  ## Conversational Mode — askUser and finish
+  
+  You are running in a STATEFUL SESSION. The user can talk to you before,
+  during, and after generation. Each user message is a new turn in an
+  ongoing conversation — treat earlier context as shared history, not
+  something to repeat back.
+  
+  ### The askUser tool
+  
+  When a requirement is genuinely ambiguous and you cannot make a confident
+  decision, call \`askUser({ question, options? })\`. Your turn will end and
+  the user will respond in the next turn.
+  
+  GOOD uses of askUser:
+  - "Should this app have offline support? That changes the data sync strategy."
+  - "I see two ways to model this relationship. Which fits your use case: A or B?"
+  - "Before I add auth, should it be email/password, social, or anonymous?"
+  BAD uses of askUser:
+  - Asking permission for obvious next steps ("Should I create the schema?" — just do it)
+  - Re-confirming something the user already specified
+  - Asking about styling preferences unless the user gave conflicting signals
+  - More than ONCE per turn — pick the most important question only
+  ### The finish tool
+  
+  When you've completed the user's current request, call \`finish({ summary })\`
+  with a 1-2 sentence summary. This gives the user a clean stopping point.
+  Examples:
+  - finish({ summary: "Added workout logging with a new 'workouts' table, CRUD
+    mutations, and a /log screen wired to the home tab." })
+  - finish({ summary: "Refactored the profile screen to use the new card
+    component. No schema changes." })
+  You don't HAVE to call finish — natural end_turn works too — but calling
+  finish explicitly is preferred because it gives the user a summary line.
+  
+  ### Follow-up turns
+  
+  After the initial build, subsequent turns are usually MODIFICATIONS, not
+  fresh builds. That means:
+  - DO NOT rewrite ARCHITECTURE.md from scratch — edit it to reflect changes
+  - DO NOT re-theme or re-scaffold — work within the existing style
+  - DO view existing files before editing them
+  - DO keep changes surgical unless the user asks for a rewrite
+  ### Interrupts
+  
+  If the user interrupts you mid-turn (Ctrl-C), you'll see a new user
+  message on the next turn that may redirect you. Respect it — don't
+  stubbornly continue the previous plan.
 </output_instructions>
 `;
 }

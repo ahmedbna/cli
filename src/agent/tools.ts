@@ -19,12 +19,16 @@ import { z } from 'zod';
 import { readSkill, readSkills, getSkillNames } from './skills.js';
 import type { InstallManager } from '../utils/installManager.js';
 import { startSpinner, type LiveSpinner } from '../utils/liveSpinner.js';
+import { Session } from '../session/session.js';
 
 // ─── Execution context ───────────────────────────────────────────────────────
 
 export interface ToolContext {
   projectRoot: string;
   installManager: InstallManager;
+  /** Optional — present when running inside a conversational session.
+   *  When present, mutating tools record to the journal for /undo. */
+  session?: Session;
 }
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
@@ -251,6 +255,7 @@ function quickAction(kind: ActionKind, target: string, extra?: string): void {
 export function executeCreateFile(
   projectRoot: string,
   args: z.infer<typeof CreateFileSchema>,
+  session?: Session, // NEW parameter
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   const dir = path.dirname(fullPath);
@@ -259,8 +264,11 @@ export function executeCreateFile(
   const existed = fs.existsSync(fullPath);
   const lines = args.content.split('\n').length;
 
-  // Live spinner while we write — gives the user continuous feedback even
-  // on big files. Writes are usually instant but the user SEES them happen.
+  // NEW: record BEFORE we overwrite
+  if (session) {
+    session.recordOperation(existed ? 'update' : 'create', args.filePath);
+  }
+
   const spinner = startSpinner(
     actionLabel(
       existed ? 'update' : 'create',
@@ -288,6 +296,7 @@ export function executeCreateFile(
 export function executeEditFile(
   projectRoot: string,
   args: z.infer<typeof EditFileSchema>,
+  session?: Session,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   if (!fs.existsSync(fullPath)) {
@@ -302,6 +311,10 @@ export function executeEditFile(
   }
   if (occurrences > 1) {
     return `Error: The specified text appears ${occurrences} times in ${args.filePath}. It must be unique.`;
+  }
+
+  if (session) {
+    session.recordOperation('update', args.filePath);
   }
 
   const oldLines = args.oldText.split('\n').length;
@@ -549,10 +562,13 @@ export function executeListDirectory(
 export function executeDeleteFile(
   projectRoot: string,
   args: z.infer<typeof DeleteFileSchema>,
+  session?: Session,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   if (!fs.existsSync(fullPath))
     return `Error: File not found: ${args.filePath}`;
+
+  if (session) session.recordOperation('delete', args.filePath);
 
   const spinner = startSpinner(actionLabel('delete', args.filePath));
   const stat = fs.statSync(fullPath);
@@ -565,12 +581,15 @@ export function executeDeleteFile(
 export function executeRenameFile(
   projectRoot: string,
   args: z.infer<typeof RenameFileSchema>,
+  session?: Session,
 ): string {
   const srcFull = path.resolve(projectRoot, args.oldPath);
   const destFull = path.resolve(projectRoot, args.newPath);
   if (!fs.existsSync(srcFull)) {
     return `Error: Source file not found: ${args.oldPath}`;
   }
+  if (session) session.recordRename(args.oldPath, args.newPath);
+
   const label = `${args.oldPath} → ${args.newPath}`;
   const spinner = startSpinner(actionLabel('rename', label));
   fs.mkdirSync(path.dirname(destFull), { recursive: true });
@@ -674,19 +693,19 @@ export async function executeTool(
 ): Promise<string> {
   switch (toolName) {
     case 'createFile':
-      return executeCreateFile(ctx.projectRoot, toolInput as any);
+      return executeCreateFile(ctx.projectRoot, toolInput as any, ctx.session);
     case 'editFile':
-      return executeEditFile(ctx.projectRoot, toolInput as any);
+      return executeEditFile(ctx.projectRoot, toolInput as any, ctx.session);
+    case 'deleteFile':
+      return executeDeleteFile(ctx.projectRoot, toolInput as any, ctx.session);
+    case 'renameFile':
+      return executeRenameFile(ctx.projectRoot, toolInput as any, ctx.session);
     case 'runCommand':
       return executeRunCommand(ctx, toolInput as any);
     case 'viewFile':
       return executeViewFile(ctx.projectRoot, toolInput as any);
     case 'listDirectory':
       return executeListDirectory(ctx.projectRoot, toolInput as any);
-    case 'deleteFile':
-      return executeDeleteFile(ctx.projectRoot, toolInput as any);
-    case 'renameFile':
-      return executeRenameFile(ctx.projectRoot, toolInput as any);
     case 'searchFiles':
       return executeSearchFiles(ctx.projectRoot, toolInput as any);
     case 'readMultipleFiles':

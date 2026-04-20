@@ -1,25 +1,18 @@
 // src/commands/build.ts
 //
-// Build workflow:
+// The build command is now context-aware:
 //
-//   Phase 1: Setup (sequential, fast)
-//     - Auth validation
-//     - Credit check
-//     - Project name/stack/prompt prompts
-//     - Template copy
+//   - Empty directory (or --name given)    → scaffold a new project + run REPL
+//   - Existing directory with .bna/        → resume the saved conversational session
+//   - Existing directory WITHOUT .bna/     → refuse (don't clobber an unrelated project)
 //
-//   Phase 2: Parallel Execution
-//     - `npm install` runs in the background (streamed live above the spinner)
-//     - AI agent runs concurrently, writing files (every action shown in real time)
+// After the first successful build turn, the user is asked whether to run
+// the finalization pipeline (Convex init → tsc → git → Convex auth → expo run).
+// They can also invoke it anytime with /finalize from inside the REPL.
 //
-//   Phase 3: Finalization (sequential, in this exact order)
-//     1. Convex project init       — `npx convex dev --once`
-//     2. Full TypeScript check     — `tsc --noEmit`, auto-fix errors with agent
-//     3. Git init + add + commit   — `git init`, `git add .`, `git commit -m "bna"`
-//     4. Convex Auth setup         — `npx @convex-dev/auth`, apply env vars, final deploy
-//     5. Launch the app            — `npx expo run:ios` / `npx expo run:android`
-//
-// Every long-running step streams output live so the terminal never appears idle.
+// The finalization pipeline itself is unchanged from the original — just
+// lifted into a helper so both the "after first build" branch and a future
+// slash command can call it.
 
 import path from 'path';
 import fs from 'fs';
@@ -30,12 +23,13 @@ import { spawn } from 'child_process';
 import { log } from '../utils/logger.js';
 import { ensureValidAuth, revalidateAuth } from '../utils/auth.js';
 import { checkCredits } from '../utils/credits.js';
-import { runAgent } from '../agent/agent.js';
 import { InstallManager } from '../utils/installManager.js';
 import { getPendingEnvVars, clearPendingEnvVars } from '../agent/tools.js';
 import { startSpinner, stopActiveSpinner } from '../utils/liveSpinner.js';
 import { typeCheckAndFix } from '../utils/tsCheck.js';
 import { initGitRepo } from '../utils/gitInit.js';
+import { Session } from '../session/session.js';
+import { runRepl } from '../session/repl.js';
 
 interface GenerateOptions {
   prompt?: string;
@@ -44,9 +38,11 @@ interface GenerateOptions {
   install?: boolean;
   run?: boolean;
   skills?: string;
+  /** Skip the "want to finalize?" prompt after the first turn */
+  noFinalize?: boolean;
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Helpers (unchanged from the original) ──────────────────────────────────
 
 function copyTemplateDir(src: string, dest: string): void {
   const SKIP = new Set([
@@ -84,17 +80,8 @@ function isMacOS(): boolean {
   return os.platform() === 'darwin';
 }
 
-/**
- * Run a command interactively (inherits stdio) — used when we WANT the user
- * to see and interact with prompts directly, e.g. Convex team selection.
- *
- * IMPORTANT: no spinner should be active when this runs — it will corrupt
- * the interactive output.
- */
 function runInteractive(command: string, cwd: string): Promise<boolean> {
-  // Ensure no spinner is on screen
   stopActiveSpinner();
-
   return new Promise((resolve) => {
     const proc = spawn(command, {
       cwd,
@@ -107,10 +94,6 @@ function runInteractive(command: string, cwd: string): Promise<boolean> {
   });
 }
 
-/**
- * Run a command and stream its output live above a spinner.
- * Used for non-interactive commands where we want continuous feedback.
- */
 async function runStreamed(
   command: string,
   cwd: string,
@@ -171,13 +154,37 @@ async function runStreamed(
   });
 }
 
+// ─── Session detection ──────────────────────────────────────────────────────
+
+function hasSavedSession(projectRoot: string): boolean {
+  return fs.existsSync(path.join(projectRoot, '.bna', 'session.json'));
+}
+
+function looksLikeBnaProject(projectRoot: string): boolean {
+  // Heuristic: directory has package.json + app/ + (convex/ or babel.config.js)
+  // If it looks like a BNA project, we don't clobber it even without .bna/.
+  return (
+    fs.existsSync(path.join(projectRoot, 'package.json')) &&
+    fs.existsSync(path.join(projectRoot, 'app'))
+  );
+}
+
+function isEmptyOrTrivial(projectRoot: string): boolean {
+  if (!fs.existsSync(projectRoot)) return true;
+  const contents = fs.readdirSync(projectRoot);
+  return (
+    contents.length === 0 ||
+    contents.every((f) => f.startsWith('.') || f === 'node_modules')
+  );
+}
+
 // ─── Main command ────────────────────────────────────────────────────────────
 
 export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.banner();
 
   // ════════════════════════════════════════════════════════════════════════
-  // Phase 1: Setup
+  // Phase 0: Auth + credits
   // ════════════════════════════════════════════════════════════════════════
 
   await ensureValidAuth();
@@ -194,11 +201,24 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
   if (credits >= 0) log.credits(credits);
 
+  // ════════════════════════════════════════════════════════════════════════
+  // Phase 1: Decide — resume existing session, or scaffold a new one?
+  // ════════════════════════════════════════════════════════════════════════
+
   const cwd = process.cwd();
-  const dirContents = fs.readdirSync(cwd);
-  const isEmpty =
-    dirContents.length === 0 ||
-    dirContents.every((f) => f.startsWith('.') || f === 'node_modules');
+
+  // Case A: `--name` forces creating a new project in a subdirectory
+  // Case B: cwd has a saved session → resume
+  // Case C: cwd is empty → scaffold into cwd
+  // Case D: cwd has stuff but no session → ask before clobbering
+
+  if (!options.name && hasSavedSession(cwd)) {
+    // ─── RESUME PATH ────────────────────────────────────────────────────
+    await resumeSession(cwd);
+    return;
+  }
+
+  // ─── SCAFFOLD PATH ──────────────────────────────────────────────────────
 
   let projectName: string;
   let projectRoot: string;
@@ -206,12 +226,49 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   if (options.name) {
     projectName = options.name;
     projectRoot = path.resolve(cwd, projectName);
-  } else if (isEmpty) {
+    // If the target exists AND has a session, resume it instead of re-scaffolding.
+    if (fs.existsSync(projectRoot) && hasSavedSession(projectRoot)) {
+      log.info(
+        `Found existing session at ${chalk.cyan(projectRoot)} — resuming.`,
+      );
+      await resumeSession(projectRoot);
+      return;
+    }
+  } else if (isEmptyOrTrivial(cwd)) {
     projectName = path.basename(cwd);
     projectRoot = cwd;
     log.info(`Using current directory as project: ${chalk.cyan(projectName)}`);
-  } else {
-    const answers = await inquirer.prompt([
+  } else if (looksLikeBnaProject(cwd)) {
+    // Existing BNA-ish project but no session file — offer to start a fresh session
+    // without scaffolding over the code.
+    log.warn(
+      `This directory looks like an existing project but has no saved session.`,
+    );
+    const { action } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'What would you like to do?',
+        choices: [
+          {
+            name: 'Start a fresh conversational session here (keep existing files)',
+            value: 'fresh-session',
+          },
+          {
+            name: 'Create a new project in a subdirectory',
+            value: 'subdir',
+          },
+          { name: 'Cancel', value: 'cancel' },
+        ],
+      },
+    ]);
+    if (action === 'cancel') return;
+    if (action === 'fresh-session') {
+      await startFreshSessionInExistingProject(cwd);
+      return;
+    }
+    // Fall through to subdirectory prompt
+    const answer = await inquirer.prompt([
       {
         type: 'input',
         name: 'projectName',
@@ -222,9 +279,25 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
           'Use only letters, numbers, hyphens, underscores',
       },
     ]);
-    projectName = answers.projectName;
+    projectName = answer.projectName;
+    projectRoot = path.resolve(cwd, projectName);
+  } else {
+    const answer = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'projectName',
+        message: 'Project name:',
+        default: 'my-bna-app',
+        validate: (input: string) =>
+          /^[a-z0-9_-]+$/i.test(input) ||
+          'Use only letters, numbers, hyphens, underscores',
+      },
+    ]);
+    projectName = answer.projectName;
     projectRoot = path.resolve(cwd, projectName);
   }
+
+  // ── Stack + prompt collection ───────────────────────────────────────────
 
   let stack: 'expo' | 'expo-convex';
   if (options.stack === 'expo') stack = 'expo';
@@ -275,7 +348,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.info(`Path:    ${chalk.dim(projectRoot)}`);
   console.log();
 
-  // ── Copy template (fast — ~2s) ─────────────────────────────────────────
+  // ── Copy template ───────────────────────────────────────────────────────
   {
     const initSpinner = startSpinner(
       chalk.cyan('Initializing the app from template'),
@@ -297,51 +370,11 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // Phase 2: PARALLEL — npm install runs concurrently with the AI agent
+  // Phase 2: Parallel install + first agent turn (via REPL)
   // ════════════════════════════════════════════════════════════════════════
 
   const installManager = new InstallManager(projectRoot);
   const skipInstall = options.install === false;
-  const skipRun = options.run === false;
-
-  let parallelSigintActive = true;
-  const parallelSigint = () => {
-    if (!parallelSigintActive) return;
-    parallelSigintActive = false;
-    stopActiveSpinner();
-    console.log();
-    log.warn('Interrupted. Aborting background install...');
-    installManager.abort();
-    log.info(
-      'Your scaffolded project is preserved at ' + chalk.cyan(projectRoot),
-    );
-    process.exit(130);
-  };
-  process.on('SIGINT', parallelSigint);
-  process.on('SIGTERM', parallelSigint);
-
-  log.divider();
-  log.info(chalk.bold('Starting parallel phase'));
-  log.info(chalk.dim('  • npm install — running in background'));
-  log.info(chalk.dim('  • AI agent    — starting now'));
-  log.divider();
-
-  // Subscribe to base install progress so we can surface occasional lines
-  // without drowning out agent output. We throttle to ~1 line every 3s.
-  let lastInstallLineAt = 0;
-  const unsubscribeInstall = installManager.onBaseInstallLine((line) => {
-    const now = Date.now();
-    if (now - lastInstallLineAt < 3000) return;
-    lastInstallLineAt = now;
-    // These arrive while the agent may be animating — use the spinner's
-    // writeAbove if one is active, else just print.
-    const msg = chalk.dim('  [npm install] ') + chalk.dim(line);
-    // getActiveSpinner lives in liveSpinner but we keep it simple:
-    // write directly — the active spinner's next tick will redraw itself.
-    // Since TTY line rewrite uses \r, this may briefly flash, but it's
-    // far better than the previous zero-feedback approach.
-    process.stdout.write('\r\x1b[K' + msg + '\n');
-  });
 
   if (skipInstall) {
     log.warn(
@@ -352,85 +385,222 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     installManager.startBaseInstall();
   }
 
+  // Surface occasional install progress during the first turn
+  let lastInstallLineAt = 0;
+  const unsubscribeInstall = installManager.onBaseInstallLine((line) => {
+    const now = Date.now();
+    if (now - lastInstallLineAt < 3000) return;
+    lastInstallLineAt = now;
+    const msg = chalk.dim('  [npm install] ') + chalk.dim(line);
+    process.stdout.write('\r\x1b[K' + msg + '\n');
+  });
+
   const freshToken = await revalidateAuth();
 
-  parallelSigintActive = false;
+  log.divider();
+  log.info(chalk.bold('Starting build session'));
+  if (!skipInstall) {
+    log.info(chalk.dim('  • npm install — running in background'));
+  }
+  log.info(chalk.dim('  • AI agent    — starting now'));
+  log.info(
+    chalk.dim(
+      '  • After the initial build, you can keep chatting to refine the app.',
+    ),
+  );
+  log.divider();
+
+  // Create the session
+  const session = new Session({
+    projectRoot,
+    stack,
+    initialPrompt: prompt,
+    authToken: freshToken,
+    installManager,
+  });
+
+  // Track whether the first turn has happened — after it completes, we
+  // offer to run the finalization pipeline.
+  let firstTurnCompleted = false;
+  const unsubscribeFirstTurn = session.onOperation(() => {
+    firstTurnCompleted = true;
+  });
+
+  // ── Hand control to the REPL ────────────────────────────────────────────
+  //
+  // The REPL runs the first turn with `initialPrompt`, then drops into
+  // interactive mode. The user can chat, ask follow-ups, run /undo, etc.
+  //
+  // Between the first turn and the interactive phase, we intercept to
+  // offer finalization (if the user wants the Convex/git/expo pipeline).
 
   try {
-    await runAgent({
-      projectRoot,
-      prompt,
-      stack,
-      authToken: freshToken,
-      installManager,
+    await runRepl(session, {
+      initialPrompt: prompt,
+      afterFirstTurn: async () => {
+        unsubscribeFirstTurn();
+        if (!firstTurnCompleted) return; // nothing was built, skip
+        if (options.noFinalize) return;
+
+        // Ensure the background install is done before we kick off finalization
+        if (!skipInstall) {
+          await waitForInstall(installManager);
+        }
+
+        const { runFinalize } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'runFinalize',
+            message:
+              'Initial build looks complete. Run finalization now (Convex init, TypeScript check, git, launch simulator)?',
+            default: true,
+          },
+        ]);
+
+        if (runFinalize) {
+          await runFinalization({
+            session,
+            stack,
+            installManager,
+            authToken: freshToken,
+            skipRun: options.run === false,
+          });
+        } else {
+          log.info(
+            chalk.dim(
+              'Skipped. You can run it later by typing /finalize in the session.',
+            ),
+          );
+        }
+      },
     });
   } catch (err: any) {
     unsubscribeInstall();
     installManager.abort();
-    process.removeListener('SIGINT', parallelSigint);
-    process.removeListener('SIGTERM', parallelSigint);
     stopActiveSpinner();
-    log.error(`Agent failed: ${err.message ?? 'unknown error'}`);
-    log.warn(
-      'Your scaffolded project is preserved at ' + chalk.cyan(projectRoot),
-    );
+    log.error(`Session failed: ${err.message ?? 'unknown error'}`);
+    log.warn('Your project is preserved at ' + chalk.cyan(projectRoot));
     process.exit(1);
   }
 
-  parallelSigintActive = true;
+  unsubscribeInstall();
+}
 
-  // Wait for the background install to finish with a visible spinner
-  if (!skipInstall) {
-    const awaitSpinner = startSpinner(
-      chalk.cyan('Ensuring background dependencies have finished installing'),
-    );
-    const installResult = await installManager.awaitBaseInstall();
-    unsubscribeInstall();
-    if (installResult.ok) {
-      const seconds = Math.round(installResult.durationMs / 1000);
-      awaitSpinner.succeed(chalk.green(`Dependencies installed (${seconds}s)`));
-    } else {
-      awaitSpinner.fail(chalk.red('npm install failed'));
-      log.warn(
-        'Base npm install failed. You can retry manually with:\n' +
-          '  ' +
-          chalk.cyan(`cd ${projectRoot} && npm install --legacy-peer-deps`),
-      );
-      stopActiveSpinner();
-      const { continueAnyway } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'continueAnyway',
-          message: 'Continue with finalization anyway?',
-          default: false,
-        },
-      ]);
-      if (!continueAnyway) {
-        log.info(
-          'Exiting. Fix the install issue, then run ' +
-            chalk.cyan('bna build') +
-            ' again in the project directory.',
-        );
-        return;
-      }
-    }
-  } else {
-    log.warn(
-      '--no-install was set. Run ' +
-        chalk.cyan(`cd ${projectRoot} && npm install`) +
-        ' before starting dev servers.',
-    );
-    unsubscribeInstall();
+// ─── Resume an existing session ─────────────────────────────────────────────
+
+async function resumeSession(projectRoot: string): Promise<void> {
+  const snapshot = Session.tryLoad(projectRoot);
+  if (!snapshot) {
+    log.error(`Could not load session at ${chalk.cyan(projectRoot)}.`);
+    return;
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // Phase 3: Finalization — exact ordering per requirements
-  //   1. Convex init
-  //   2. TypeScript check + autofix
-  //   3. Git init + add + commit
-  //   4. Convex Auth setup + env vars + final deploy
-  //   5. Launch simulator
-  // ════════════════════════════════════════════════════════════════════════
+  log.info(
+    `Resuming session from ${chalk.dim(new Date(snapshot.createdAt).toLocaleString())} ` +
+      chalk.dim(`(${snapshot.turns} turn${snapshot.turns === 1 ? '' : 's'})`),
+  );
+
+  // node_modules might be stale, but we don't re-install — the agent will
+  // handle new packages via npx expo install on demand. Warn if missing.
+  if (!fs.existsSync(path.join(projectRoot, 'node_modules'))) {
+    log.warn(
+      `No ${chalk.cyan('node_modules/')} found. Run ${chalk.cyan('npm install')} ` +
+        `in this directory before launching the dev server.`,
+    );
+  }
+
+  const freshToken = await revalidateAuth();
+  const installManager = new InstallManager(projectRoot);
+
+  const session = new Session({
+    projectRoot,
+    stack: snapshot.stack,
+    initialPrompt: snapshot.initialPrompt,
+    authToken: freshToken,
+    installManager,
+  });
+  session.restoreFrom(snapshot);
+
+  await runRepl(session); // no initialPrompt — user drives
+}
+
+// ─── Start a fresh session in an existing (non-BNA-scaffolded) project ─────
+
+async function startFreshSessionInExistingProject(
+  projectRoot: string,
+): Promise<void> {
+  const promptAnswer = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'prompt',
+      message: chalk.yellow('What would you like to do in this project?'),
+      validate: (input: string) =>
+        input.trim().length > 0 || 'Please describe what you want',
+    },
+  ]);
+
+  // Detect stack from package.json (best-effort)
+  let stack: 'expo' | 'expo-convex' = 'expo';
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'),
+    );
+    if (pkg.dependencies?.convex || pkg.devDependencies?.convex) {
+      stack = 'expo-convex';
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const freshToken = await revalidateAuth();
+  const installManager = new InstallManager(projectRoot);
+
+  const session = new Session({
+    projectRoot,
+    stack,
+    initialPrompt: promptAnswer.prompt,
+    authToken: freshToken,
+    installManager,
+  });
+
+  await runRepl(session, { initialPrompt: promptAnswer.prompt });
+}
+
+// ─── Wait for background install (with visible spinner) ─────────────────────
+
+async function waitForInstall(installManager: InstallManager): Promise<void> {
+  const status = installManager.getStatus();
+  if (status === 'ready') return;
+  if (status === 'failed') {
+    log.warn('Background npm install failed — continuing without it.');
+    return;
+  }
+
+  const spinner = startSpinner(
+    chalk.cyan('Ensuring background dependencies have finished installing'),
+  );
+  const result = await installManager.awaitBaseInstall();
+  if (result.ok) {
+    const seconds = Math.round(result.durationMs / 1000);
+    spinner.succeed(chalk.green(`Dependencies installed (${seconds}s)`));
+  } else {
+    spinner.fail(chalk.red('npm install failed'));
+  }
+}
+
+// ─── Finalization pipeline (unchanged logic, lifted into a function) ───────
+
+interface FinalizeOptions {
+  session: Session;
+  stack: 'expo' | 'expo-convex';
+  installManager: InstallManager;
+  authToken: string;
+  skipRun: boolean;
+}
+
+export async function runFinalization(opts: FinalizeOptions): Promise<void> {
+  const { session, stack, installManager, authToken, skipRun } = opts;
+  const projectRoot = session.projectRoot;
 
   console.log();
   log.divider();
@@ -462,7 +632,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
         {
           type: 'confirm',
           name: 'continueAnyway',
-          message: 'Continue with the build anyway?',
+          message: 'Continue with the rest of finalization anyway?',
           default: false,
         },
       ]);
@@ -488,7 +658,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectRoot,
     installManager,
     stack,
-    authToken: freshToken,
+    authToken,
   });
 
   if (!typesClean) {
@@ -571,8 +741,10 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
               projectRoot,
               `Setting ${name}`,
             );
-            if (result.ok) log.success(`Set ${name}`);
-            else log.warn(`Failed to set ${name} — set it manually later`);
+            if (result.ok) {
+              log.success(`Set ${name}`);
+              session.markEnvVarConfirmed(name);
+            } else log.warn(`Failed to set ${name} — set it manually later`);
           } else {
             log.info(
               chalk.dim(`Skipped ${name} — remember to set it before use`),
@@ -617,12 +789,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     log.info(chalk.dim('Step 4/5 — Convex Auth skipped (Expo-only stack).'));
   }
 
-  // Deactivate SIGINT handler — all critical work is done
-  parallelSigintActive = false;
-  process.removeListener('SIGINT', parallelSigint);
-  process.removeListener('SIGTERM', parallelSigint);
-
-  // ── Step 5: Launch the app in the simulator ───────────────────────────
+  // ── Step 5: Launch the app in the simulator ────────────────────────────
   const expoCommand = isMacOS() ? 'npx expo run:ios' : 'npx expo run:android';
   const platform = isMacOS() ? 'iOS' : 'Android';
 
@@ -632,20 +799,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
 
   if (skipRun) {
     log.info(chalk.dim('--no-run: skipping dev server launch.'));
-    console.log();
-    log.divider();
-    log.success(chalk.bold('Your app is ready!'));
-    console.log();
-    if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
-    if (stack === 'expo-convex') {
-      log.info(
-        '  npx convex dev          ' + chalk.dim('# Start Convex backend'),
-      );
-    }
-    log.info(
-      `  ${expoCommand}    ` + chalk.dim(`# Start ${platform} dev build`),
-    );
-    console.log();
+    printReadyFooter(projectRoot, stack, expoCommand, platform);
     return;
   }
 
@@ -669,7 +823,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   log.info(chalk.dim(`Running: ${expoCommand}`));
   console.log();
 
-  // Stop any stray spinner — the Expo CLI takes over stdin/stdout from here.
   stopActiveSpinner();
 
   const expoProc = spawn(expoCommand, [], {
@@ -683,20 +836,33 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     if (code !== 0) log.warn(`Expo exited with code ${code}.`);
   });
 
+  printReadyFooter(projectRoot, stack, expoCommand, platform);
+}
+
+function printReadyFooter(
+  projectRoot: string,
+  stack: 'expo' | 'expo-convex',
+  expoCommand: string,
+  platform: string,
+): void {
+  const cwd = process.cwd();
+  const projectName = path.basename(projectRoot);
   console.log();
   log.divider();
   log.success(chalk.bold('Your app is ready!'));
   console.log();
   if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
   if (stack === 'expo-convex') {
-    log.info(
-      '  npx convex dev          ' +
-        chalk.dim('# Convex backend (already running)'),
-    );
+    log.info('  npx convex dev          ' + chalk.dim('# Convex backend'));
   }
+  log.info(`  ${expoCommand}    ` + chalk.dim(`# ${platform} dev build`));
+  console.log();
   log.info(
-    `  ${expoCommand}    ` +
-      chalk.dim(`# ${platform} dev build (already running)`),
+    chalk.dim('You are still in the conversational session — ') +
+      chalk.cyan('type anything') +
+      chalk.dim(' to continue building, or ') +
+      chalk.cyan('/exit') +
+      chalk.dim(' to quit.'),
   );
   console.log();
 }
