@@ -1,10 +1,10 @@
-import { stripIndents } from '../../utils/stripIndent.js';
+import { stripIndents } from '../../../../utils/stripIndent.js';
 
 export function convexGuidelines() {
   return stripIndents`
 <convex_guidelines>
   Convex = database + realtime + functions + auth + storage. Realtime is automatic.
-  Call \`lookupConvexDocsTool\` before writing code for: file storage, full-text search, pagination, HTTP actions, scheduling, crons.
+  Call \`lookupDocs\` before writing code for: file storage, full-text search, pagination, HTTP actions, scheduling, crons.
 
   ## Functions
   \`\`\`ts
@@ -91,6 +91,46 @@ export function convexGuidelines() {
   | Mutation write | 8 MiB / 8192 docs |
   | Query/mutation timeout | 1s |
   | Action timeout | 10 min |
+
+  ## Directory Structure (backend)
+  \`\`\`
+  convex/
+  ├── schema.ts                # Add tables; keep ...authTables + users
+  ├── auth.ts                  # Already exists — do not modify
+  ├── auth.config.ts           # Already exists — NEVER modify
+  ├── users.ts                 # Already exists
+  └── http.ts                  # Already exists
+  \`\`\`
+
+  ## Schema Pattern — ADD tables, keep existing ones
+  \`\`\`ts
+  // convex/schema.ts
+  import { defineSchema, defineTable } from 'convex/server';
+  import { authTables } from '@convex-dev/auth/server';
+  import { v } from 'convex/values';
+  export default defineSchema({
+    ...authTables, // NEVER remove
+    users: defineTable({ /* keep existing fields */ }),
+    myTable: defineTable({ userId: v.id('users'), text: v.string() }).index('by_user', ['userId']),
+  });
+  \`\`\`
+
+  ## Existing API
+  - \`api.auth.loggedInUser\` — current user or null
+  - \`api.users.get\` — current user (throws if not authed)
+  - \`api.users.getAll\` — all users except current
+  - \`api.users.update({ name?, bio?, gender?, birthday? })\`
+
+  ## Locked files — NEVER modify
+  - \`convex/auth.config.ts\`
+
+  ## Prohibited (backend)
+  - Modifying locked files (\`convex/auth.config.ts\`)
+  - Running \`npx convex dev\` / \`npx convex deploy\` — these are automatic
+  - Using \`.filter()\` in queries — always use \`.withIndex()\`
+  - Using \`v.map()\` or \`v.set()\` validators
+  - Using return validators
+  - Using \`ctx.db\` inside actions
 </convex_guidelines>
 `;
 }

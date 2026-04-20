@@ -1,5 +1,5 @@
-import { stripIndents } from '../../utils/stripIndent.js';
-import { SystemPromptOptions } from '../prompts.js';
+import { stripIndents } from '../../../utils/stripIndent.js';
+import type { SystemPromptOptions } from '../../prompts.js';
 
 export const allowedHTMLElements = [
   'a',

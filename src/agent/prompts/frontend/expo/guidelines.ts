@@ -1,9 +1,9 @@
-import { stripIndents } from '../../utils/stripIndent.js';
+import { stripIndents } from '../../../../utils/stripIndent.js';
 
-export const templateGuidelines = () => stripIndents`
-<solution_constraints>
+export const expoGuidelines = () => stripIndents`
+<expo_guidelines>
   ## Stack
-  Expo development build + React Native + Convex + TypeScript.
+  Expo development build + React Native + TypeScript.
   File-based routing via Expo Router. Inline styles ONLY — no Tailwind, no \`className\`.
 
   ## Dev Build (NOT Expo Go)
@@ -33,14 +33,14 @@ export const templateGuidelines = () => stripIndents`
   ### File naming
   All files in \`components/ui/\` must use lowercase with hyphens: \`button.tsx\`, \`text.tsx\`, \`input.tsx\`, \`card.tsx\`, etc.
 
-  ### Required components — always create these for every app 
+  ### Required components — always create these for every app
   - \`components/ui/button.tsx\` — already exists in template, update to match new theme - ensure buttons have a minimum height to prevent text or icons from being clipped
   - \`components/ui/text.tsx\` — create a typography wrapper with named variants (h1, h2, body, caption, etc.)
   - \`components/ui/input.tsx\` — create a styled text input component
 
   ### Component rules
   - Design each component to suit this app's identity
-  - Components must be pure UI — no business logic, no Convex calls
+  - Components must be pure UI — no business logic, no backend calls
   - Use named exports from \`components/ui/\` files
   - Use \`react-native-reanimated\` for animations
   - Use \`expo-haptics\` for touch feedback in interactive components
@@ -48,13 +48,12 @@ export const templateGuidelines = () => stripIndents`
   ## Critical Rules
   1. Plan first — inspect template → theme → ui components → schema → functions → screens → ARCHITECTURE.md.
   2. Colors — ALWAYS use theme colors via \`useColor\` hook. NEVER hardcode hex/rgb. Avoid using purple and blue or purple gradient — they look generic and default. Instead, choose colors that fit the app's unique identity.
-  3. Locked files — NEVER modify: \`convex/auth.config.ts\`.
-  4. Native rebuilds — warn user when a native rebuild is required after installing a new native module.
-  5. Unique identity — every app gets its own palette and component style.
-  6. Animations — ALWAYS use \`react-native-reanimated\` for all animations. NEVER use RN's built-in \`Animated\` API.
-  7. Keyboard — ALWAYS use \`react-native-keyboard-controller\` around inputs. NEVER use \`KeyboardAvoidingView\`.
-  8. DO NOT run convex dev or expo — they are started automatically after you finish.
-  9. ARCHITECTURE.md — ALWAYS write this as the FINAL step of every generation.
+  3. Native rebuilds — warn user when a native rebuild is required after installing a new native module.
+  4. Unique identity — every app gets its own palette and component style.
+  5. Animations — ALWAYS use \`react-native-reanimated\` for all animations. NEVER use RN's built-in \`Animated\` API.
+  6. Keyboard — ALWAYS use \`react-native-keyboard-controller\` around inputs. NEVER use \`KeyboardAvoidingView\`.
+  7. DO NOT run expo commands — they are started automatically after you finish.
+  8. ARCHITECTURE.md — ALWAYS write this as the FINAL step of every generation.
 
   ## app.json — Update for every new app
   When starting a new app, always update these fields in \`app.json\`:
@@ -66,7 +65,7 @@ export const templateGuidelines = () => stripIndents`
 
   Never ship a new app with the template's default \`"bna"\` slug, scheme, or bundle identifier.
 
-  ## Directory Structure
+  ## Directory Structure (frontend)
   \`\`\`
   .
   ├── ARCHITECTURE.md            # MANDATORY — project map for future modifications
@@ -87,12 +86,6 @@ export const templateGuidelines = () => stripIndents`
   │       ├── card.tsx             # Create if needed
   │       ├── spinner.tsx          # Already exists — update theme
   │       └── ...                  # Additional components
-  ├── convex/
-  │   ├── schema.ts                # Add tables; keep ...authTables + users
-  │   ├── auth.ts                  # Already exists — do not modify
-  │   ├── auth.config.ts           # Already exists — NEVER modify
-  │   ├── users.ts                 # Already exists
-  │   └── http.ts                  # Already exists
   ├── hooks/
   │   ├── useColor.ts              # Already exists
   │   └── useModeToggle.tsx        # Already exists
@@ -116,7 +109,7 @@ export const templateGuidelines = () => stripIndents`
   export default function HomeLayout() {
     const { isDark } = useModeToggle();
     const colors = isDark ? COLORS.dark : COLORS.light;
-    
+
     return (
       <NativeTabs
         minimizeBehavior='onScrollDown'
@@ -153,42 +146,22 @@ export const templateGuidelines = () => stripIndents`
   Raw RN primitives (\`Text\`, \`Pressable\`, etc.) are only acceptable for structural layout.
   Make sure to use import { useSafeAreaInsets } from 'react-native-safe-area-context'; for safe area.
 
-  ## Convex Backend
-  \`\`\`ts
-  // convex/schema.ts — ADD tables, keep existing ones
-  import { defineSchema, defineTable } from 'convex/server';
-  import { authTables } from '@convex-dev/auth/server';
-  import { v } from 'convex/values';
-  export default defineSchema({
-    ...authTables, // NEVER remove
-    users: defineTable({ /* keep existing fields */ }),
-    myTable: defineTable({ userId: v.id('users'), text: v.string() }).index('by_user', ['userId']),
-  });
-  \`\`\`
-
-  ## Existing API
-  - \`api.auth.loggedInUser\` — current user or null
-  - \`api.users.get\` — current user (throws if not authed)
-  - \`api.users.getAll\` — all users except current
-  - \`api.users.update({ name?, bio?, gender?, birthday? })\`
-
   ## Permissions & app.json
   When adding native permissions, update \`app.json\` with the appropriate entries.
   Permissions changes require a dev client rebuild — remind the user.
 
-  ## Prohibited
+  ## Prohibited (frontend)
   - Hardcoded hex/rgb anywhere — use theme colors via useColor hook
   - Copying the template's default palette into new apps
   - PascalCase or uppercase filenames in \`components/ui/\`
   - \`useBottomTabBarHeight\` — use \`useSafeAreaInsets\` instead
-  - Modifying locked files (\`convex/auth.config.ts\`)
   - Deleting \`(home)\` or its \`index\` trigger
   - Parentheses in folder names other than \`(home)\`
-  - Running \`npx convex dev\` or \`npx expo run:*\` — these are automatic
+  - Running \`npx expo run:*\` — these are automatic
   - Running \`npx create-expo-app\` or \`npm init\` — template is pre-copied
   - Running \`npm install\` — base deps are pre-installed
   - Suggesting Expo Go for native module features
   - Shipping with default template name/slug/scheme/bundle identifiers
   - Skipping ARCHITECTURE.md — it MUST be written as the final step
-</solution_constraints>
+</expo_guidelines>
 `;
