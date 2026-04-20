@@ -165,7 +165,7 @@ export const buildToolDefinitions = (stack?: StackId) => {
   return [
     toolDef(
       'createFile',
-      'Create or overwrite a file on the local file system. This tool works IMMEDIATELY — it does not depend on npm packages being installed. Always write the complete file content.',
+      'Create or overwrite a file on the local file system. This tool works IMMEDIATELY — it does not depend on npm packages being installed. Always write the complete file content. createFile auto-creates parent directories. Use this only when you need an empty directory up front.',
       CreateFileSchema,
     ),
     toolDef(
