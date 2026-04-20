@@ -36,12 +36,19 @@ No test suite or linter is configured in this repo. If no subcommand is given, `
 
 ### Build Pipeline (`src/commands/build.ts`)
 
+Context-aware entry logic:
+- `--name` given, or empty directory → scaffold new project + run REPL
+- Existing directory with `.bna/session.json` → resume saved session
+- Existing BNA-like project (has `package.json` + `app/`) but no session → prompt: fresh session or new subdirectory
+- Other non-empty directory → prompt for project name
+
+After context resolution:
 1. Auth check + credits validation
-2. Resolve stack → copy template from `templates/expo-convex/` or `templates/expo-supabase/` to target directory
+2. Copy template from `templates/expo-convex/` to target directory
 3. Start background `npm install` (InstallManager) unless `--no-install`
 4. Create Session → launch REPL
 5. First agent turn fires automatically with the user's prompt
-6. After first turn: optional finalization (backend init → TypeScript check → git init → expo run) — skipped with `--no-run`
+6. After first turn: prompt to run finalization (Convex init → TypeScript check → git init → Convex Auth → expo run) — skipped with `--no-run`
 
 ### Session & REPL (`src/session/`)
 
@@ -63,7 +70,7 @@ No test suite or linter is configured in this repo. If no subcommand is given, `
 - **Streaming SSE**: Model output and tool results stream in real-time with live spinners via `liveSpinner.ts`.
 - **Parallel install**: `installManager.ts` runs `npm install` in the background while the agent generates code; `runCommand` auto-waits if install is still running.
 - **File journal**: Every file mutation is journaled in the session → `/undo` replays in reverse.
-- **Skill system**: `skills/` is grouped by backend/frontend (`skills/convex/*`, `skills/expo/*`, `skills/supabase/*`). Each leaf is a self-contained `SKILL.md` (e.g., `convex/convex-file-storage`, `expo/expo-animations`). The agent loads them dynamically via `lookupDocs` — only what's needed per session. To add a skill, drop a new folder under the appropriate category; it's auto-discovered.
+- **Skill system**: `skills/` is grouped by backend/frontend (`skills/convex/*`, `skills/expo/*`). Each leaf is a self-contained `SKILL.md` (e.g., `convex/convex-file-storage`, `expo/expo-animations`). The agent loads them dynamically via `lookupDocs` — only what's needed per session. To add a skill, drop a new folder under the appropriate category; it's auto-discovered.
 - **Session persistence**: `.bna/session.json` inside the generated project allows resuming a session after CLI restart.
 - **Clarification loop**: the `askUser` tool (see `session/planner.ts`) lets the model pause a turn for a user question instead of guessing. Do not add ad-hoc clarification prompts elsewhere — use this path.
 
@@ -84,11 +91,11 @@ No test suite or linter is configured in this repo. If no subcommand is given, `
 
 ### Templates
 
-`templates/expo-convex/` and `templates/expo-supabase/` — Starter projects copied per build based on the chosen `--backend`. Both use Expo Router (file-based routing). Modifying a template affects every newly generated app on that stack.
+`templates/expo-convex/` — The only currently active template. Uses Expo Router (file-based routing) with Convex backend and `@convex-dev/auth` pre-wired. Modifying it affects every newly generated app. Supabase/Swift stacks are stubbed in `stacks.ts` but commented out; add a `templates/<frontend>-<backend>/` directory and update `SUPPORTED_STACKS` to activate one.
 
 ### Skills
 
-`skills/{convex,expo,supabase}/<skill>/SKILL.md` — Each skill is self-contained documentation the agent reads to guide code generation for that capability (e.g., `convex/convex-file-storage`, `expo/expo-animations`). Adding a new skill folder under the right category makes it available to the agent automatically via `lookupDocs`.
+`skills/{convex,expo}/<skill>/SKILL.md` — Each skill is self-contained documentation the agent reads to guide code generation for that capability (e.g., `convex/convex-file-storage`, `expo/expo-animations`). Adding a new skill folder under the right category makes it available to the agent automatically via `lookupDocs`.
 
 ## Build Config
 
