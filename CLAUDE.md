@@ -56,7 +56,7 @@ No test suite or linter is configured in this repo. If no subcommand is given, `
 - `tools.ts` — 12 tool definitions (Zod schemas) + executors: `createFile`, `editFile`, `deleteFile`, `renameFile`, `viewFile`, `readMultipleFiles`, `listDirectory`, `searchFiles`, `runCommand`, `lookupDocs`, `addEnvironmentVariables`, `checkDependencies`. (`askUser` lives in `session/planner.ts`.)
 - `contextManager.ts` — Manages conversation window; deduplicates recent `viewFile` calls to avoid redundant context.
 - `skills.ts` — Auto-discovers and loads skills from `skills/<category>/<skill>/SKILL.md` on demand via `lookupDocs` tool.
-- `prompts.ts` + `prompts/` — Assembles the system prompt. Layout: `backend/{convex,supabase}/`, `frontend/{expo,swift}/`, `shared/{role,formatting,output,secrets,cliMode,exampleData}.ts`. Selection is driven by the chosen stack.
+- `prompts.ts` — Assembles the system prompt by reading markdown fragments from the top-level `prompts/` directory. Layout: `prompts/system/role/<stack>.md`, `prompts/system/cli/<stack>.md`, `prompts/system/output/<stack>.md`, `prompts/frontend/<fe>.md`, `prompts/backend/<be>.md`, `prompts/system/secrets/<be|none>.md`, `prompts/system/example-data/<be|none>.md`, `prompts/system/formatting.md`. The cli md file supports a `{{SKILLS_CATALOG}}` placeholder substituted at load time.
 
 ### Key Patterns
 
@@ -69,18 +69,18 @@ No test suite or linter is configured in this repo. If no subcommand is given, `
 
 ### Utils (`src/utils/`)
 
-| File | Purpose |
-|---|---|
-| `auth.ts` | OAuth token storage + refresh |
-| `store.ts` | Conf-based persistent config (`~/.config/bna-cli/`) |
-| `credits.ts` | Credit balance helpers used by `bna credits` and pre-turn gating |
-| `installManager.ts` | Background npm orchestration with streaming output |
-| `tsCheck.ts` | TypeScript validation + autofix after generation |
-| `gitInit.ts` | Git repo initialization post-build |
-| `logger.ts` | Chalk-based pretty terminal output |
-| `liveSpinner.ts` | Ora-based reusable spinners |
-| `shell.ts` | Terminal output cleaning / ANSI stripping |
-| `stripIndent.ts` | Template-literal indent helper for prompt strings |
+| File                | Purpose                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `auth.ts`           | OAuth token storage + refresh                                    |
+| `store.ts`          | Conf-based persistent config (`~/.config/bna-cli/`)              |
+| `credits.ts`        | Credit balance helpers used by `bna credits` and pre-turn gating |
+| `installManager.ts` | Background npm orchestration with streaming output               |
+| `tsCheck.ts`        | TypeScript validation + autofix after generation                 |
+| `gitInit.ts`        | Git repo initialization post-build                               |
+| `logger.ts`         | Chalk-based pretty terminal output                               |
+| `liveSpinner.ts`    | Ora-based reusable spinners                                      |
+| `shell.ts`          | Terminal output cleaning / ANSI stripping                        |
+| `stripIndent.ts`    | Template-literal indent helper for prompt strings                |
 
 ### Templates
 

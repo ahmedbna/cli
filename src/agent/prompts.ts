@@ -1,29 +1,27 @@
 // src/agent/prompts.ts
 // System prompt composer for the BNA CLI agent.
 //
-// The prompt is assembled from three layers:
-//   - shared/      — stack-agnostic pieces (role, CLI mode, formatting, output, secrets, example data)
-//   - frontend/<tech>/  — frontend-specific guidelines (expo, swift, …)
-//   - backend/<tech>/   — backend-specific guidelines (convex, supabase, …)
+// The system prompt is assembled from markdown fragments in the top-level
+// `prompts/` directory. The stack id (e.g. `expo-convex`) selects which
+// per-stack md files are loaded. Stack-agnostic pieces (formatting) are
+// loaded unconditionally.
 //
-// The stack id (e.g. "expo-convex") is parsed into a frontend + optional
-// backend, and the matching guideline modules are loaded.
+// Layout:
+//   prompts/frontend/<fe>.md                — frontend guidelines
+//   prompts/backend/<be>.md                 — backend guidelines
+//   prompts/system/role/<stack>.md          — opening role statement
+//   prompts/system/cli/<stack>.md           — CLI mode + tools + workflow
+//   prompts/system/example-data/<be>.md     — example data instructions
+//   prompts/system/secrets/<be>.md          — secrets handling
+//   prompts/system/formatting.md            — formatting rules
+//   prompts/system/output/<stack>.md        — output instructions
+//
+// The cli md file may contain a `{{SKILLS_CATALOG}}` placeholder which is
+// substituted at load time with the runtime-generated skills summary.
 
-import { stripIndents } from '../utils/stripIndent.js';
-
-import { roleSystemPrompt } from './prompts/shared/role.js';
-import { cliSystemPrompt } from './prompts/shared/cliMode.js';
-import { formattingInstructions } from './prompts/shared/formatting.js';
-import { outputInstructions } from './prompts/shared/output.js';
-import { secretsInstructions } from './prompts/shared/secrets.js';
-import { exampleDataInstructions } from './prompts/shared/exampleData.js';
-
-import { expoGuidelines } from './prompts/frontend/expo/guidelines.js';
-import { swiftGuidelines } from './prompts/frontend/swift/guidelines.js';
-import { convexGuidelines } from './prompts/backend/convex/guidelines.js';
-import { supabaseGuidelines } from './prompts/backend/supabase/guidelines.js';
-
-// ─── Types ───────────────────────────────────────────────────────────────────
+import fs from 'fs';
+import path from 'path';
+import { generateSkillsSummary } from './skills.js';
 
 export type PromptFrontend = 'expo' | 'swift';
 export type PromptBackend = 'convex' | 'supabase' | null;
@@ -33,6 +31,40 @@ export interface SystemPromptOptions {
 }
 
 export type StackId = SystemPromptOptions['stack'];
+
+// ─── Resolve the prompts directory ───────────────────────────────────────────
+
+let cachedPromptsDir: string | null = null;
+
+function resolvePromptsDir(): string {
+  if (cachedPromptsDir) return cachedPromptsDir;
+
+  let dir = path.dirname(new URL(import.meta.url).pathname);
+  for (let i = 0; i < 5; i++) {
+    const candidate = path.join(dir, 'prompts');
+    if (fs.existsSync(candidate)) {
+      cachedPromptsDir = candidate;
+      return candidate;
+    }
+    dir = path.dirname(dir);
+  }
+
+  const cwdCandidate = path.join(process.cwd(), 'prompts');
+  if (fs.existsSync(cwdCandidate)) {
+    cachedPromptsDir = cwdCandidate;
+    return cwdCandidate;
+  }
+
+  throw new Error(
+    'Prompts directory not found. Expected at <package>/prompts/.',
+  );
+}
+
+function loadMd(relativePath: string): string {
+  const full = path.join(resolvePromptsDir(), relativePath);
+  if (!fs.existsSync(full)) return '';
+  return fs.readFileSync(full, 'utf-8').trim();
+}
 
 // ─── Stack parsing ───────────────────────────────────────────────────────────
 
@@ -47,42 +79,28 @@ function parseStack(stack: StackId): {
   };
 }
 
-// ─── Technology dispatch ─────────────────────────────────────────────────────
-
-function frontendGuidelines(frontend: PromptFrontend): string {
-  switch (frontend) {
-    case 'expo':
-      return expoGuidelines();
-    case 'swift':
-      return swiftGuidelines();
-  }
-}
-
-function backendGuidelines(backend: PromptBackend): string {
-  switch (backend) {
-    case 'convex':
-      return convexGuidelines();
-    case 'supabase':
-      return supabaseGuidelines();
-    case null:
-      return '';
-  }
-}
-
 // ─── Assembly ────────────────────────────────────────────────────────────────
 
 export function generalSystemPrompt(options: SystemPromptOptions): string {
   const { stack } = options;
   const { frontend, backend } = parseStack(stack);
+  const backendKey = backend ?? 'none';
 
-  return stripIndents`
-  ${roleSystemPrompt({ frontend, backend })}
-  ${cliSystemPrompt({ stack, frontend, backend })}
-  ${frontendGuidelines(frontend)}
-  ${backendGuidelines(backend)}
-  ${exampleDataInstructions({ backend })}
-  ${secretsInstructions({ backend })}
-  ${formattingInstructions(options)}
-  ${outputInstructions({ frontend, backend })}
-  `;
+  const cli = loadMd(`system/cli/${stack}.md`).replace(
+    '{{SKILLS_CATALOG}}',
+    generateSkillsSummary(stack),
+  );
+
+  const sections = [
+    loadMd(`system/role/${stack}.md`),
+    cli,
+    loadMd(`frontend/${frontend}.md`),
+    backend ? loadMd(`backend/${backend}.md`) : '',
+    loadMd(`system/example-data/${backendKey}.md`),
+    loadMd(`system/secrets/${backendKey}.md`),
+    loadMd('system/formatting.md'),
+    loadMd(`system/output/${stack}.md`),
+  ];
+
+  return sections.filter(Boolean).join('\n\n');
 }
