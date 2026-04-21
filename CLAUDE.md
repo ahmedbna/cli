@@ -88,6 +88,17 @@ Full slash-command list (`/help` shows these at runtime):
 - **Session persistence**: `.bna/session.json` inside the generated project allows resuming a session after CLI restart.
 - **Clarification loop**: the `askUser` tool (see `session/planner.ts`) lets the model pause a turn for a user question instead of guessing. Do not add ad-hoc clarification prompts elsewhere — use this path.
 
+### UI Layer (`src/ui/`)
+
+The terminal UI is built with [Ink](https://github.com/vadimdemedes/ink) (React for CLIs). It activates when a TTY is detected; non-TTY / CI falls back to the legacy spinner path.
+
+- `events.ts` — `uiBus` EventEmitter + `UiEvent` union type. Agent/tool code calls `emit(event)`; Ink components subscribe via `on(fn)`. `setUiActive(true)` gates all emissions — silent no-ops when UI is off.
+- `App.tsx` — Root Ink component. Uses a **Static/Live split**: finalized items go into `<Static>` (rendered once, scrollback-safe); in-flight tool calls and streaming assistant text live in a re-rendering "live region" below. State is managed by a single `reducer(state, UiEvent)`.
+- `toolAdapter.ts` — `createToolUi(kind, label)` returns a `ToolUi` interface whose methods (`progress`, `update`, `succeed`, `fail`) transparently dispatch to either the event bus (UI active) or the legacy Ora spinner (UI inactive). Tool executors in `tools.ts` call this instead of touching either renderer directly.
+- `components/` — `Lines.tsx` (user/assistant/system lines), `ToolLine.tsx`, `Thinking.tsx` (round + token counter), `Input.tsx`, `SlashPalette.tsx`, `ClarifyPicker.tsx`.
+
+**Key invariant**: tool code must never call `emit()` or `startSpinner()` directly — always go through `createToolUi` or `quickToolAction` so the dual-mode abstraction holds.
+
 ### Utils (`src/utils/`)
 
 | File                | Purpose                                                          |
