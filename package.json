@@ -40,6 +40,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/react": "^18.3.28",
     "esbuild": "^0.25.0"
   }
 }

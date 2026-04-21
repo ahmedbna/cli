@@ -1,24 +1,25 @@
-// Color palette tuned for both dark and light terminals.
-// Accent is the BNA yellow (#FAD40B) from the existing logger.
+// src/ui/theme.ts
+//
+// Minimal palette for a Claude-Code-style inline UI.
+// The BNA yellow (#FAD40B) is the one accent; everything else is neutral.
+
 export const theme = {
-  accent: '#FAD40B',
-  accentDim: '#b89a00',
-  ok: '#22c55e',
-  warn: '#f59e0b',
-  err: '#ef4444',
-  info: '#a5b4fc',
-  userFg: '#93c5fd',
-  assistFg: '#fde68a',
-  mute: '#6b7280',
-  border: '#3f3f46',
-  borderHot: '#FAD40B',
-  toolBg: '#1f2937',
+  accent: '#FAD40B', // BNA brand yellow
+  user: '#93c5fd', // soft blue for user prompt marker
+  assistant: '#e5e7eb', // near-white for assistant text
+  mute: '#6b7280', // dim grey for metadata/timestamps
+  ok: '#22c55e', // green check
+  warn: '#f59e0b', // amber warn
+  err: '#ef4444', // red cross
+  dim: '#9ca3af', // slightly lighter than mute for progress lines
 } as const;
 
+// Cycle of verbs the thinking spinner rotates through.
+// Kept short and playful — matches your brand voice.
 export const verbs = [
-  'Marinating',
+  'Thinking',
   'Cooking',
-  'Plotting',
   'Wiring',
+  'Plotting',
   'Polishing',
 ];

@@ -367,47 +367,49 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     return;
   }
 
-  let prompt: string;
-  if (options.prompt) prompt = options.prompt;
-  else {
-    const promptAnswer = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'prompt',
-        message: chalk.yellow('What do you want to build?'),
-        validate: (input: string) =>
-          input.trim().length > 0 || 'Please describe your app',
-      },
-    ]);
-    prompt = promptAnswer.prompt;
-  }
+  // If --prompt was passed on the CLI, use it; otherwise leave it undefined
+  // and let the REPL ask inline as the first chat turn.
+  const prompt = options.prompt?.trim() || undefined;
+
+  // let prompt: string;
+  // if (options.prompt) prompt = options.prompt;
+  // else {
+  //   const promptAnswer = await inquirer.prompt([
+  //     {
+  //       type: 'input',
+  //       name: 'prompt',
+  //       message: chalk.yellow('What do you want to build?'),
+  //       validate: (input: string) =>
+  //         input.trim().length > 0 || 'Please describe your app',
+  //     },
+  //   ]);
+  //   prompt = promptAnswer.prompt;
+  // }
 
   console.log();
   log.info(`Project:  ${chalk.cyan(projectName)}`);
   log.info(`Frontend: ${chalk.cyan(frontend)}`);
   log.info(`Backend:  ${chalk.cyan(backend)}`);
-  log.info(
-    `Prompt:   ${chalk.cyan(prompt.length > 80 ? prompt.slice(0, 80) + '...' : prompt)}`,
-  );
+  // log.info(
+  //   `Prompt:   ${chalk.cyan(prompt.length > 80 ? prompt.slice(0, 80) + '...' : prompt)}`,
+  // );
   log.info(`Path:     ${chalk.dim(projectRoot)}`);
   console.log();
 
   // ── Copy template ───────────────────────────────────────────────────────
   {
-    const initSpinner = startSpinner(
-      chalk.cyan('Initializing the app from template'),
-    );
+    // const initSpinner = startSpinner(chalk.cyan('Initializing the app'));
     try {
       const templateDir = resolveTemplateDir(stack);
       if (!fs.existsSync(projectRoot)) {
         fs.mkdirSync(projectRoot, { recursive: true });
       }
       copyTemplateDir(templateDir, projectRoot);
-      initSpinner.succeed(
-        chalk.green(`App initialized at ${chalk.cyan(projectRoot)}`),
-      );
+      // initSpinner.succeed(
+      //   chalk.green(`App initialized at ${chalk.cyan(projectRoot)}`),
+      // );
     } catch (err: any) {
-      initSpinner.fail(chalk.red('Failed to initialize the app'));
+      // initSpinner.fail(chalk.red('Failed to initialize the app'));
       log.error(err.message);
       process.exit(1);
     }
@@ -441,22 +443,23 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
 
   const freshToken = await revalidateAuth();
 
-  log.info(chalk.bold('Starting build session'));
+  log.success(chalk.bold('Starting build...'));
   if (!skipInstall) {
-    log.info(chalk.dim('  • npm install — running in background'));
+    log.info(chalk.dim('  npm install — running in background'));
   }
-  log.info(chalk.dim('  • AI agent    — starting now'));
+  log.info(chalk.dim('  AI agent    — starting now'));
   log.info(
     chalk.dim(
-      '  • After the initial build, you can keep chatting to refine the app.',
+      '  After the initial build, you can keep chatting to refine the app.',
     ),
   );
+  log.info(chalk.dim('  esc to interrupt ·  ctrl+c to exit'));
 
   // Create the session
   const session = new Session({
     projectRoot,
     stack,
-    initialPrompt: prompt,
+    initialPrompt: prompt ?? '',
     authToken: freshToken,
     installManager,
   });

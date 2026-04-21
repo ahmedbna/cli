@@ -3,17 +3,17 @@
 // A single agent turn: model generates, tools execute, model continues
 // until it stops (end_turn) OR it calls `askUser` OR the user interrupts.
 //
-// Unlike the old monolithic runAgent, this:
-//   - Takes a Session (carries all persistent state across turns)
-//   - Returns a TurnOutcome (complete | clarify | interrupted | error)
-//   - Respects session.isInterruptRequested() after every tool call
-//   - Uses the new askUser and finish meta-tools alongside regular tools
+// UI integration:
+//   - When `isUiActive()`, all visible output goes through the UI event bus
+//     (src/ui/events.ts) — no direct stdout writes, no spinner.
+//   - When not active (non-TTY / legacy path), we fall back to the original
+//     stdout streaming + liveSpinner "Thinking..." behavior.
 //
 // Every turn has its own spend cap (MAX_ROUNDS_PER_TURN) so a single
-// user request can't run away — if the model is still going after N
-// rounds, we return `clarify` and ask the user whether to keep going.
+// user request can't run away.
 
 import chalk from 'chalk';
+import { randomUUID } from 'node:crypto';
 import { log } from '../utils/logger.js';
 import { refreshAuthToken } from '../utils/auth.js';
 import { CONVEX_SITE_URL } from '../utils/store.js';
@@ -27,11 +27,12 @@ import { askUserToolDefinition, finishToolDefinition } from './planner.js';
 import type { TurnOutcome } from './planner.js';
 import type { Session } from './session.js';
 import { generalSystemPrompt } from '../agent/prompts.js';
+import { emit, isUiActive } from '../ui/events.js';
 
 const MAX_ROUNDS_PER_TURN = 30;
 const LONG_TURN_THRESHOLD = 20;
 
-// ─── SSE event types (unchanged from original) ─────────────────────────────
+// ─── SSE event types (unchanged) ───────────────────────────────────────────
 
 interface TextDelta {
   type: 'text_delta';
@@ -94,7 +95,7 @@ interface ToolUseBlock {
 }
 type StreamBlock = TextBlock | ToolUseBlock;
 
-// ─── Main entry: run one conversational turn ────────────────────────────────
+// ─── Main entry ─────────────────────────────────────────────────────────────
 
 export async function runAgentTurn(
   session: Session,
@@ -104,7 +105,6 @@ export async function runAgentTurn(
   const turnNumber = session.beginTurn();
   const systemPrompt = generalSystemPrompt({ stack: session.stack });
 
-  // First turn: set the bootstrap context. Subsequent turns: append.
   if (opts.isInitialBuild && turnNumber === 1) {
     const bootstrap =
       `You are BNA, building a mobile app from the user's description:\n\n${userMessage}\n\n` +
@@ -115,9 +115,6 @@ export async function runAgentTurn(
     session.context.addUserText(userMessage);
   }
 
-  // Assemble tools: regular tools (filtered to the session's stack) +
-  // askUser + finish. Skill-scoped tools like lookupDocs only see the
-  // skills for the selected frontend/backend techs.
   const allTools = [
     ...buildToolDefinitions(session.stack),
     askUserToolDefinition,
@@ -131,19 +128,25 @@ export async function runAgentTurn(
   };
 
   for (let round = 0; round < MAX_ROUNDS_PER_TURN; round++) {
-    // ── Check for interrupt before each round ───────────────────────────
     if (session.isInterruptRequested()) {
       session.clearInterrupt();
+      emit({ type: 'thinking-stop' });
       return { kind: 'interrupted' };
     }
 
-    // ── Soft warning when the turn is getting long ──────────────────────
     if (round === LONG_TURN_THRESHOLD) {
-      log.info(
-        chalk.dim(
-          `(This turn is getting long — ${round} rounds. Press Ctrl-C to interrupt.)`,
-        ),
-      );
+      if (isUiActive()) {
+        emit({
+          type: 'info',
+          text: `(this turn is getting long — ${round} rounds. Press esc to interrupt.)`,
+        });
+      } else {
+        log.info(
+          chalk.dim(
+            `(This turn is getting long — ${round} rounds. Press Ctrl-C to interrupt.)`,
+          ),
+        );
+      }
     }
 
     let response: Response;
@@ -156,6 +159,7 @@ export async function runAgentTurn(
         session,
       );
     } catch (err: any) {
+      emit({ type: 'thinking-stop' });
       return {
         kind: 'error',
         message: `Network error: ${err.message ?? 'Unknown error'}`,
@@ -163,7 +167,10 @@ export async function runAgentTurn(
     }
 
     if (response.status === 401) {
-      log.warn('Auth token expired mid-session, refreshing...');
+      emit({ type: 'thinking-stop' });
+      if (isUiActive())
+        emit({ type: 'warn', text: 'Auth token expired, refreshing...' });
+      else log.warn('Auth token expired mid-session, refreshing...');
       const refreshed = await refreshAuthToken();
       if (!refreshed) {
         return {
@@ -173,7 +180,9 @@ export async function runAgentTurn(
         };
       }
       session.setAuthToken(refreshed);
-      log.success('Token refreshed, retrying...');
+      if (isUiActive())
+        emit({ type: 'success', text: 'Token refreshed, retrying...' });
+      else log.success('Token refreshed, retrying...');
       try {
         response = await fetchStream(
           CONVEX_SITE_URL,
@@ -195,6 +204,7 @@ export async function runAgentTurn(
     }
 
     if (response.status === 402) {
+      emit({ type: 'thinking-stop' });
       return {
         kind: 'error',
         message:
@@ -203,13 +213,14 @@ export async function runAgentTurn(
     }
 
     if (!response.ok) {
+      emit({ type: 'thinking-stop' });
       const msg = await extractErrorMessage(response);
       return { kind: 'error', message: msg };
     }
 
     const { blocks, stopReason } = await readStream(response, round, session);
 
-    // ── Process the blocks ──────────────────────────────────────────────
+    // ── Process the blocks ────────────────────────────────────────────
     const assistantContent: any[] = [];
     const toolResults: any[] = [];
     let askUserCall: { question: string; options?: string[] } | null = null;
@@ -229,13 +240,11 @@ export async function runAgentTurn(
         input: block.input,
       });
 
-      // Intercept meta-tools
       if (block.name === 'askUser') {
         askUserCall = {
           question: block.input.question ?? '',
           options: block.input.options,
         };
-        // Synthesize an ack result so the context is balanced
         toolResults.push({
           type: 'tool_result',
           tool_use_id: block.id,
@@ -253,7 +262,6 @@ export async function runAgentTurn(
         continue;
       }
 
-      // Regular tool — dedup viewFile against context manager
       const toolName = block.name as ToolName;
       let result: string;
 
@@ -273,7 +281,8 @@ export async function runAgentTurn(
         result = await executeTool(toolCtx, toolName, block.input);
       } catch (err: any) {
         result = `Error: ${err.message}`;
-        log.error(err.message);
+        if (isUiActive()) emit({ type: 'error', text: err.message });
+        else log.error(err.message);
       }
 
       toolResults.push({
@@ -282,23 +291,20 @@ export async function runAgentTurn(
         content: result,
       });
 
-      // Check for interrupt after each tool — lets the user Ctrl-C
-      // mid-generation and have it honored promptly.
       if (session.isInterruptRequested()) {
         session.context.addAssistantMessage(assistantContent);
         session.context.addToolResults(toolResults);
         session.clearInterrupt();
+        emit({ type: 'thinking-stop' });
         return { kind: 'interrupted' };
       }
     }
 
     session.context.addAssistantMessage(assistantContent);
 
-    // ── Decide outcome ──────────────────────────────────────────────────
-
     if (askUserCall) {
-      // Persist the ack tool result so history is balanced
       if (toolResults.length > 0) session.context.addToolResults(toolResults);
+      emit({ type: 'thinking-stop' });
       return {
         kind: 'clarify',
         question: askUserCall.question,
@@ -308,6 +314,7 @@ export async function runAgentTurn(
 
     if (finishCall) {
       if (toolResults.length > 0) session.context.addToolResults(toolResults);
+      emit({ type: 'thinking-stop' });
       return { kind: 'complete', summary: finishCall.summary };
     }
 
@@ -317,19 +324,25 @@ export async function runAgentTurn(
     }
 
     if (stopReason === 'end_turn') {
+      emit({ type: 'thinking-stop' });
       return { kind: 'complete' };
     }
 
     if (stopReason === 'max_tokens') {
-      log.warn('Response truncated — continuing...');
+      if (isUiActive()) {
+        emit({ type: 'warn', text: 'Response truncated — continuing...' });
+      } else {
+        log.warn('Response truncated — continuing...');
+      }
       session.context.addUserText('Please continue where you left off.');
       continue;
     }
 
+    emit({ type: 'thinking-stop' });
     return { kind: 'complete' };
   }
 
-  // Exceeded MAX_ROUNDS_PER_TURN
+  emit({ type: 'thinking-stop' });
   return {
     kind: 'clarify',
     question: `I've run ${MAX_ROUNDS_PER_TURN} rounds on this request. Should I keep going, or would you like to guide me?`,
@@ -337,7 +350,7 @@ export async function runAgentTurn(
   };
 }
 
-// ─── HTTP helpers ────────────────────────────────────────────────────────────
+// ─── HTTP helpers (unchanged) ──────────────────────────────────────────────
 
 async function fetchStream(
   siteUrl: string,
@@ -369,7 +382,6 @@ async function fetchStreamWithRetry(
   let lastResponse: Response | null = null;
 
   for (let attempt = 0; attempt < MAX_FETCH_RETRIES; attempt++) {
-    // Honor interrupts between retries
     if (session.isInterruptRequested()) {
       if (lastResponse) return lastResponse;
       throw new Error('interrupted');
@@ -383,15 +395,9 @@ async function fetchStreamWithRetry(
       tools,
     );
 
-    // Success OR non-retryable error → return immediately so the caller
-    // can handle auth/credits/etc. We only retry the gateway 5xx family.
-    if (!RETRYABLE_STATUSES.has(response.status)) {
-      return response;
-    }
-
+    if (!RETRYABLE_STATUSES.has(response.status)) return response;
     lastResponse = response;
 
-    // Drain the body so the connection can be reused
     try {
       await response.text();
     } catch {
@@ -399,16 +405,14 @@ async function fetchStreamWithRetry(
     }
 
     if (attempt < MAX_FETCH_RETRIES - 1) {
-      const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
-      log.warn(
-        `Backend returned ${response.status} — retrying in ${delay / 1000}s (attempt ${attempt + 2}/${MAX_FETCH_RETRIES})...`,
-      );
+      const delay = 1000 * Math.pow(2, attempt);
+      const msg = `Backend returned ${response.status} — retrying in ${delay / 1000}s (attempt ${attempt + 2}/${MAX_FETCH_RETRIES})...`;
+      if (isUiActive()) emit({ type: 'warn', text: msg });
+      else log.warn(msg);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 
-  // All retries exhausted — return the last response so the regular
-  // error path (extractErrorMessage) can format a clean message.
   return lastResponse!;
 }
 
@@ -416,43 +420,34 @@ async function extractErrorMessage(response: Response): Promise<string> {
   const status = response.status;
   const statusText = response.statusText || '';
 
-  // Map known gateway/infrastructure errors to clean messages — these come
-  // from Cloudflare/Convex and the body is always HTML, never useful.
   if (status === 502) {
-    return 'Server unavailable (502 Bad Gateway). The Convex backend is temporarily unreachable. Please try again in a moment.';
+    return 'Server unavailable (502). The Convex backend is temporarily unreachable.';
   }
   if (status === 503) {
-    return 'Service temporarily unavailable (503). Please try again in a moment.';
+    return 'Service temporarily unavailable (503). Please try again.';
   }
   if (status === 504) {
-    return 'Upstream timeout (504). The backend took too long to respond. Please try again.';
+    return 'Upstream timeout (504). Please try again.';
   }
   if (status === 429) {
     return 'Rate limited (429). Please wait a few seconds and try again.';
   }
 
   const ct = response.headers.get('content-type') ?? '';
-
   try {
-    // Only parse JSON bodies — HTML bodies are always error pages
     if (ct.includes('application/json')) {
       const j = await response.json();
       return (
         j.error ?? j.message ?? `API request failed (${status} ${statusText})`
       );
     }
-
-    // For non-JSON responses (HTML error pages, plain text), don't dump the body.
-    // Read a short preview and discard the rest.
     const text = await response.text();
     if (
       ct.includes('text/html') ||
       /<!DOCTYPE|<html/i.test(text.slice(0, 100))
     ) {
-      return `API request failed (${status} ${statusText || 'error'}). The server returned an HTML error page — it may be down or misconfigured.`;
+      return `API request failed (${status} ${statusText || 'error'}).`;
     }
-
-    // Plain text error — safe to show but truncate aggressively
     const preview = text.trim().slice(0, 300);
     return `API request failed (${status}): ${preview}${text.length > 300 ? '...' : ''}`;
   } catch {
@@ -460,7 +455,7 @@ async function extractErrorMessage(response: Response): Promise<string> {
   }
 }
 
-// ─── SSE stream reader ───────────────────────────────────────────────────────
+// ─── SSE stream reader ─────────────────────────────────────────────────────
 
 interface StreamResult {
   blocks: StreamBlock[];
@@ -477,14 +472,42 @@ async function readStream(
 
   const indexToBlock = new Map<number, StreamBlock>();
   let textStarted = false;
+  let assistantId: string | null = null;
 
-  const spinner = startSpinner(
-    chalk.hex('#a5b4fc')(`Thinking... (round ${round + 1})`),
-  );
+  // Thinking indicator:
+  //   - UI mode: emit 'thinking-start' (component owns the animation)
+  //   - Legacy: fall back to the blocking liveSpinner
+  const uiMode = isUiActive();
+  let spinner: ReturnType<typeof startSpinner> | null = null;
+
+  if (uiMode) {
+    emit({
+      type: 'thinking-start',
+      round: round + 1,
+      maxRounds: MAX_ROUNDS_PER_TURN,
+    });
+  } else {
+    spinner = startSpinner(
+      chalk.hex('#a5b4fc')(`Thinking... (round ${round + 1})`),
+    );
+  }
+
+  const stopThinking = () => {
+    if (uiMode) emit({ type: 'thinking-stop' });
+    else spinner?.stop();
+  };
+
+  // Ensure we cleanly finalize any streaming assistant message
+  const endAssistant = () => {
+    if (uiMode && assistantId) {
+      emit({ type: 'assistant-end', id: assistantId });
+      assistantId = null;
+    }
+  };
 
   const body = response.body;
   if (!body) {
-    spinner.stop();
+    stopThinking();
     return { blocks, stopReason };
   }
 
@@ -494,7 +517,6 @@ async function readStream(
 
   try {
     while (true) {
-      // Honor interrupts during streaming — release the reader and exit.
       if (session.isInterruptRequested()) {
         try {
           await reader.cancel();
@@ -549,25 +571,44 @@ async function readStream(
             blocks,
             indexToBlock,
             onText: (text) => {
-              if (text) {
-                if (!textStarted) {
-                  spinner.stop();
-                  textStarted = true;
+              if (!text) return;
+              if (!textStarted) {
+                // Stop the thinking indicator at the first byte of text
+                stopThinking();
+                textStarted = true;
+                if (uiMode) {
+                  assistantId = randomUUID();
+                  emit({
+                    type: 'assistant-start',
+                    id: assistantId,
+                    ts: Date.now(),
+                  });
+                } else {
                   console.log();
                 }
+              }
+              if (uiMode && assistantId) {
+                emit({ type: 'assistant-delta', id: assistantId, text });
+              } else {
                 process.stdout.write(chalk.white(text));
               }
             },
             onToolStart: () => {
               if (!textStarted) {
-                spinner.stop();
+                stopThinking();
                 textStarted = true;
-              } else {
+              } else if (!uiMode) {
                 process.stdout.write('\n');
               }
+              // If we had been streaming assistant text, seal it off here —
+              // the tool run interrupts the text.
+              endAssistant();
             },
             onStopReason: (reason) => {
               stopReason = reason;
+            },
+            onTokens: (n) => {
+              if (uiMode) emit({ type: 'thinking-tokens', tokens: n });
             },
           });
         }
@@ -579,10 +620,15 @@ async function readStream(
     } catch {
       /* noop */
     }
+    endAssistant();
     if (!textStarted) {
-      spinner.stop();
-    } else {
+      stopThinking();
+    } else if (!uiMode) {
       process.stdout.write('\n');
+    } else {
+      // In UI mode the thinking indicator may still be up if only tools ran.
+      // Stop it on the reader's exit; agentTurn will restart it for round 2.
+      stopThinking();
     }
   }
 
@@ -597,11 +643,18 @@ function processEvent(
     onText: (text: string) => void;
     onToolStart: () => void;
     onStopReason: (reason: string) => void;
+    onTokens: (n: number) => void;
   },
 ) {
-  const { blocks, indexToBlock, onText, onToolStart, onStopReason } = ctx;
+  const { blocks, indexToBlock, onText, onToolStart, onStopReason, onTokens } =
+    ctx;
 
   switch (event.type) {
+    case 'message_start': {
+      const u = event.message.usage;
+      onTokens(u.output_tokens);
+      break;
+    }
     case 'content_block_start': {
       const cb = event.content_block;
       let block: StreamBlock;
@@ -650,10 +703,12 @@ function processEvent(
     }
     case 'message_delta': {
       if (event.delta.stop_reason) onStopReason(event.delta.stop_reason);
+      if (event.usage?.output_tokens) onTokens(event.usage.output_tokens);
       break;
     }
     case 'error': {
-      log.error(`Stream error: ${event.error.message}`);
+      if (isUiActive()) emit({ type: 'error', text: `Stream: ${event.error.message}` });
+      else log.error(`Stream error: ${event.error.message}`);
       break;
     }
     default:

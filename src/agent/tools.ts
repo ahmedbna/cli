@@ -2,19 +2,19 @@
 //
 // Tool definitions and executors for the CLI agent.
 //
-// Streaming model:
-//   - Every action shows a LIVE spinner that ticks continuously while the
-//     underlying work runs — no more busy-waits, no more silent periods.
-//   - Long-running commands (npm install, npx expo install) stream their
-//     stdout/stderr to the terminal in real time as dim lines, so the user
-//     sees exactly what's happening.
-//   - File contents are NEVER dumped to the terminal. Only filenames,
-//     line counts, and status labels are shown.
+// UI integration:
+//   - Every tool executor opens a ToolUi channel (src/ui/toolAdapter.ts),
+//     which transparently dispatches to either:
+//       * the Ink event bus (when UI is active) → compact inline tool lines
+//       * the legacy liveSpinner              (otherwise) → old animated UI
+//   - No executor writes to stdout directly anymore. They all go through
+//     ui.progress / ui.succeed / ui.fail.
+//
+// Tool contract is unchanged — same names, schemas, return values.
 
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import chalk, { type ChalkInstance } from 'chalk';
 import { z } from 'zod';
 import {
   readSkill,
@@ -24,16 +24,14 @@ import {
   type StackId,
 } from './skills.js';
 import type { InstallManager } from '../utils/installManager.js';
-import { startSpinner, type LiveSpinner } from '../utils/liveSpinner.js';
 import { Session } from '../session/session.js';
+import { createToolUi, quickToolAction } from '../ui/toolAdapter.js';
 
 // ─── Execution context ───────────────────────────────────────────────────────
 
 export interface ToolContext {
   projectRoot: string;
   installManager: InstallManager;
-  /** Optional — present when running inside a conversational session.
-   *  When present, mutating tools record to the journal for /undo. */
   session?: Session;
 }
 
@@ -113,10 +111,6 @@ function buildLookupDocsSchema(skillNames: string[]) {
   });
 }
 
-// Fallback schema covering every known skill — used for type inference and
-// when no stack is available. Tool definitions passed to the model are always
-// built via `buildToolDefinitions(stack)` so the agent sees only stack-relevant
-// skills.
 export const LookupDocsSchema = buildLookupDocsSchema(getSkillNames());
 
 export const AddEnvironmentVariablesSchema = z.object({
@@ -141,7 +135,7 @@ export type ToolName =
   | 'addEnvironmentVariables'
   | 'checkDependencies';
 
-// ─── Tool Definitions (sent to Anthropic API) ────────────────────────────────
+// ─── Tool Definitions (unchanged) ────────────────────────────────────────────
 
 function toolDef(name: string, description: string, schema: z.ZodType) {
   const jsonSchema = z.toJSONSchema(schema);
@@ -149,13 +143,6 @@ function toolDef(name: string, description: string, schema: z.ZodType) {
   return { name, description, input_schema: rest };
 }
 
-/**
- * Build the tool definitions sent to the model.
- *
- * When `stack` is provided, the `lookupDocs` tool is scoped to only the
- * skills that belong to that stack's tech buckets — the agent never sees
- * or calls into skills irrelevant to the chosen frontend/backend.
- */
 export const buildToolDefinitions = (stack?: StackId) => {
   const availableSkills = stack
     ? getSkillNamesForStack(stack)
@@ -223,11 +210,6 @@ export const buildToolDefinitions = (stack?: StackId) => {
   ];
 };
 
-/**
- * Default tool definitions — covers every skill. Kept for backwards
- * compatibility with call sites that don't have a stack available.
- * Prefer `buildToolDefinitions(stack)` in new code.
- */
 export const toolDefinitions = buildToolDefinitions();
 
 // ─── Queued environment variables ───────────────────────────────────────────
@@ -242,57 +224,12 @@ export function clearPendingEnvVars(): void {
   pendingEnvVars.clear();
 }
 
-// ─── Action label helpers ───────────────────────────────────────────────────
-
-type ActionKind =
-  | 'create'
-  | 'update'
-  | 'delete'
-  | 'rename'
-  | 'run'
-  | 'docs'
-  | 'env'
-  | 'queue'
-  | 'read'
-  | 'search'
-  | 'list';
-
-const ACTION_STYLE: Record<ActionKind, { verb: string; color: ChalkInstance }> =
-  {
-    create: { verb: 'Creating', color: chalk.green },
-    update: { verb: 'Updating', color: chalk.yellow },
-    delete: { verb: 'Removing', color: chalk.red },
-    rename: { verb: 'Moving', color: chalk.blue },
-    run: { verb: 'Running', color: chalk.magenta },
-    docs: { verb: 'Loading skill', color: chalk.cyan },
-    env: { verb: 'Queued env var', color: chalk.hex('#f59e0b') },
-    queue: { verb: 'Queued (deps)', color: chalk.dim },
-    read: { verb: 'Reading', color: chalk.blue },
-    search: { verb: 'Searching', color: chalk.blue },
-    list: { verb: 'Listing', color: chalk.blue },
-  };
-
-function actionLabel(kind: ActionKind, target: string, extra?: string): string {
-  const { verb, color } = ACTION_STYLE[kind];
-  const tail = extra ? chalk.dim(` ${extra}`) : '';
-  return `${color(verb)} ${chalk.cyan(target)}${tail}`;
-}
-
-/** Print a clean completion line for fast synchronous work. */
-function quickAction(kind: ActionKind, target: string, extra?: string): void {
-  const { verb, color } = ACTION_STYLE[kind];
-  const tail = extra ? chalk.dim(` ${extra}`) : '';
-  process.stdout.write(
-    `  ${color('✓')} ${color(verb)} ${chalk.cyan(target)}${tail}\n`,
-  );
-}
-
 // ─── Filesystem Tool Executors ───────────────────────────────────────────────
 
 export function executeCreateFile(
   projectRoot: string,
   args: z.infer<typeof CreateFileSchema>,
-  session?: Session, // NEW parameter
+  session?: Session,
 ): string {
   const fullPath = path.resolve(projectRoot, args.filePath);
   const dir = path.dirname(fullPath);
@@ -301,29 +238,23 @@ export function executeCreateFile(
   const existed = fs.existsSync(fullPath);
   const lines = args.content.split('\n').length;
 
-  // NEW: record BEFORE we overwrite
   if (session) {
     session.recordOperation(existed ? 'update' : 'create', args.filePath);
   }
 
-  const spinner = startSpinner(
-    actionLabel(
-      existed ? 'update' : 'create',
-      args.filePath,
-      `(${lines} lines)`,
-    ),
+  // A file create/edit is very fast — we open the ToolUi channel, do the
+  // synchronous write, and immediately terminate. The user sees a single
+  // "● Writing app/index.tsx (12 lines)" line.
+  const ui = createToolUi(
+    existed ? 'editFile' : 'createFile',
+    args.filePath,
+    `(${lines} lines)`,
   );
   try {
     fs.writeFileSync(fullPath, args.content, 'utf-8');
-    spinner.succeed(
-      actionLabel(
-        existed ? 'update' : 'create',
-        args.filePath,
-        `(${lines} lines)`,
-      ),
-    );
+    ui.succeed(`(${lines} lines)`);
   } catch (err) {
-    spinner.fail(`Failed to write ${args.filePath}`);
+    ui.fail();
     throw err;
   }
 
@@ -350,45 +281,43 @@ export function executeEditFile(
     return `Error: The specified text appears ${occurrences} times in ${args.filePath}. It must be unique.`;
   }
 
-  if (session) {
-    session.recordOperation('update', args.filePath);
-  }
+  if (session) session.recordOperation('update', args.filePath);
 
   const oldLines = args.oldText.split('\n').length;
   const newLines = args.newText.split('\n').length;
+  const delta = newLines - oldLines;
   const extra =
-    oldLines !== newLines ? `(${oldLines}→${newLines} lines)` : undefined;
+    delta === 0
+      ? undefined
+      : delta > 0
+        ? `(+${delta} lines)`
+        : `(${delta} lines)`;
 
-  const spinner = startSpinner(actionLabel('update', args.filePath, extra));
+  const ui = createToolUi('editFile', args.filePath, extra);
   try {
     const newContent = content.replace(args.oldText, args.newText);
     fs.writeFileSync(fullPath, newContent, 'utf-8');
-    spinner.succeed(actionLabel('update', args.filePath, extra));
+    ui.succeed(extra);
   } catch (err) {
-    spinner.fail(`Failed to edit ${args.filePath}`);
+    ui.fail();
     throw err;
   }
 
   return `Successfully edited ${args.filePath}`;
 }
 
-// ─── runCommand — streams output live, no buffering ─────────────────────────
+// ─── runCommand — streams live output via ToolUi ────────────────────────────
 
 function isNpmFamily(cmd: string): boolean {
   const trimmed = cmd.trim();
   return /^(npm|npx|yarn|pnpm|bun(?:x)?)\b/.test(trimmed);
 }
 
-/**
- * Spawn a command and stream its stdout/stderr live to the terminal as
- * dim indented lines. Also captures the full output for the tool-result
- * return value. The user sees progress continuously — no silent periods.
- */
 async function spawnWithLiveOutput(
   command: string,
   cwd: string,
   timeoutMs: number,
-  spinner: LiveSpinner,
+  onLine: (line: string) => void,
 ): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     const proc = spawn(command, {
@@ -404,19 +333,14 @@ async function spawnWithLiveOutput(
     const handleChunk = (chunk: Buffer) => {
       const text = chunk.toString();
       captured += text;
-      // Cap captured output so tool-result stays reasonable
       if (captured.length > 32_000) captured = captured.slice(-16_000);
-
       lineBuf += text;
       const parts = lineBuf.split('\n');
       lineBuf = parts.pop() ?? '';
-
       for (const rawLine of parts) {
         const line = rawLine.trimEnd();
         if (!line) continue;
-        // Route live progress through the spinner so it renders cleanly
-        // above the animated spinner line.
-        spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(line));
+        onLine(line);
       }
     };
 
@@ -424,7 +348,7 @@ async function spawnWithLiveOutput(
     proc.stderr?.on('data', handleChunk);
 
     const timer = setTimeout(() => {
-      spinner.writeAbove(chalk.red('    │ (timeout — killing process)'));
+      onLine('(timeout — killing process)');
       try {
         proc.kill('SIGTERM');
       } catch {
@@ -439,10 +363,7 @@ async function spawnWithLiveOutput(
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      // Flush any trailing partial line
-      if (lineBuf.trim()) {
-        spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(lineBuf.trim()));
-      }
+      if (lineBuf.trim()) onLine(lineBuf.trim());
       resolve({
         ok: code === 0,
         output:
@@ -459,35 +380,26 @@ export async function executeRunCommand(
 ): Promise<string> {
   const timeoutMs = args.timeout ?? 180_000;
 
-  // npm-family → route through InstallManager (waits for base install,
-  // then streams output live).
   if (isNpmFamily(args.command)) {
     const status = ctx.installManager.getStatus();
     const isWaiting = status === 'installing' || status === 'pending';
 
-    const spinnerLabel = isWaiting
-      ? actionLabel('queue', args.command, '(waiting for base install)')
-      : actionLabel('run', args.command);
-
-    const spinner = startSpinner(spinnerLabel);
+    const ui = createToolUi(
+      'runCommand',
+      args.command,
+      isWaiting ? '(waiting for base install)' : undefined,
+    );
 
     try {
       const result = await ctx.installManager.runDependentCommand(
         args.command,
         timeoutMs,
-        // Live streaming callback — every line from the child process
-        // gets written above the spinner in real time.
-        (line) => spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(line)),
-        // Status change callback — when the base install finishes and
-        // our queued command actually starts, update the spinner text.
-        () => spinner.update(actionLabel('run', args.command)),
+        (line) => ui.progress(line),
+        () => ui.update(args.command),
       );
 
-      if (result.ok) {
-        spinner.succeed(actionLabel('run', args.command, '✓'));
-      } else {
-        spinner.fail(actionLabel('run', args.command, 'failed'));
-      }
+      if (result.ok) ui.succeed();
+      else ui.fail();
 
       const out = result.output;
       const truncated =
@@ -496,25 +408,21 @@ export async function executeRunCommand(
           : out;
       return result.ok ? truncated : `Error: ${truncated}`;
     } catch (err: any) {
-      spinner.fail(actionLabel('run', args.command, 'failed'));
+      ui.fail();
       return `Error: ${err.message ?? 'unknown error'}`;
     }
   }
 
-  // Non-npm commands — stream live via spawn.
-  const spinner = startSpinner(actionLabel('run', args.command));
+  const ui = createToolUi('runCommand', args.command);
   try {
     const result = await spawnWithLiveOutput(
       args.command,
       ctx.projectRoot,
       timeoutMs,
-      spinner,
+      (line) => ui.progress(line),
     );
-    if (result.ok) {
-      spinner.succeed(actionLabel('run', args.command, '✓'));
-    } else {
-      spinner.fail(actionLabel('run', args.command, 'failed'));
-    }
+    if (result.ok) ui.succeed();
+    else ui.fail();
     const out = result.output;
     const truncated =
       out.length > 4000
@@ -522,7 +430,7 @@ export async function executeRunCommand(
         : out;
     return result.ok ? truncated : `Error: ${truncated}`;
   } catch (err: any) {
-    spinner.fail(actionLabel('run', args.command, 'failed'));
+    ui.fail();
     return `Error: ${err.message ?? 'unknown error'}`;
   }
 }
@@ -541,16 +449,14 @@ export function executeViewFile(
     return `Error: ${args.filePath} is a directory, use listDirectory instead`;
   }
 
-  const spinner = startSpinner(actionLabel('read', args.filePath));
+  const ui = createToolUi('viewFile', args.filePath);
   const content = fs.readFileSync(fullPath, 'utf-8');
   const lines = content.split('\n');
   const start = (args.startLine ?? 1) - 1;
   const end =
     args.endLine === -1 ? lines.length : (args.endLine ?? lines.length);
   const slice = lines.slice(Math.max(0, start), end);
-  spinner.succeed(
-    actionLabel('read', args.filePath, `(${slice.length} lines)`),
-  );
+  ui.succeed(`(${slice.length} lines)`);
   return slice.map((line, i) => `${start + i + 1}: ${line}`).join('\n');
 }
 
@@ -573,7 +479,7 @@ export function executeListDirectory(
     return `Error: Directory not found: ${dirPath}`;
   }
 
-  const spinner = startSpinner(actionLabel('list', dirPath));
+  const ui = createToolUi('listDirectory', dirPath);
 
   function listDir(dir: string, depth: number, maxDepth: number): string[] {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -592,7 +498,7 @@ export function executeListDirectory(
 
   const maxDepth = args.recursive ? 2 : 0;
   const result = listDir(fullPath, 0, maxDepth);
-  spinner.succeed(actionLabel('list', dirPath, `(${result.length} entries)`));
+  ui.succeed(`(${result.length} entries)`);
   return 'Directory:\n' + result.join('\n');
 }
 
@@ -607,11 +513,11 @@ export function executeDeleteFile(
 
   if (session) session.recordOperation('delete', args.filePath);
 
-  const spinner = startSpinner(actionLabel('delete', args.filePath));
+  const ui = createToolUi('deleteFile', args.filePath);
   const stat = fs.statSync(fullPath);
   if (stat.isDirectory()) fs.rmdirSync(fullPath);
   else fs.unlinkSync(fullPath);
-  spinner.succeed(actionLabel('delete', args.filePath));
+  ui.succeed();
   return `Successfully deleted ${args.filePath}`;
 }
 
@@ -628,10 +534,10 @@ export function executeRenameFile(
   if (session) session.recordRename(args.oldPath, args.newPath);
 
   const label = `${args.oldPath} → ${args.newPath}`;
-  const spinner = startSpinner(actionLabel('rename', label));
+  const ui = createToolUi('renameFile', label);
   fs.mkdirSync(path.dirname(destFull), { recursive: true });
   fs.renameSync(srcFull, destFull);
-  spinner.succeed(actionLabel('rename', label));
+  ui.succeed();
   return `Successfully renamed ${args.oldPath} → ${args.newPath}`;
 }
 
@@ -640,7 +546,7 @@ export async function executeSearchFiles(
   args: z.infer<typeof SearchFilesSchema>,
 ): Promise<string> {
   const maxResults = args.maxResults ?? 20;
-  const spinner = startSpinner(actionLabel('search', args.pattern));
+  const ui = createToolUi('searchFiles', args.pattern);
 
   return new Promise<string>((resolve) => {
     const globFlag = args.fileGlob ? `--include="${args.fileGlob}"` : '';
@@ -658,18 +564,16 @@ export async function executeSearchFiles(
     proc.on('close', () => {
       const trimmed = out.trim();
       if (!trimmed) {
-        spinner.succeed(actionLabel('search', args.pattern, '(no matches)'));
+        ui.succeed('(no matches)');
         resolve(`No matches found for "${args.pattern}"`);
         return;
       }
       const lines = trimmed.split('\n').slice(0, maxResults);
-      spinner.succeed(
-        actionLabel('search', args.pattern, `(${lines.length} matches)`),
-      );
+      ui.succeed(`(${lines.length} matches)`);
       resolve(`Found ${lines.length} match(es):\n` + lines.join('\n'));
     });
     proc.on('error', () => {
-      spinner.fail(actionLabel('search', args.pattern, 'failed'));
+      ui.fail();
       resolve(`Search failed for pattern "${args.pattern}".`);
     });
   });
@@ -679,8 +583,9 @@ export function executeReadMultipleFiles(
   projectRoot: string,
   args: z.infer<typeof ReadMultipleFilesSchema>,
 ): string {
-  const spinner = startSpinner(
-    actionLabel('read', `${args.filePaths.length} files`),
+  const ui = createToolUi(
+    'readMultipleFiles',
+    `${args.filePaths.length} files`,
   );
   const results: string[] = [];
   for (const filePath of args.filePaths) {
@@ -699,7 +604,7 @@ export function executeReadMultipleFiles(
     const numbered = lines.map((line, i) => `${i + 1}: ${line}`).join('\n');
     results.push(`--- ${filePath} (${lines.length} lines) ---\n${numbered}`);
   }
-  spinner.succeed(actionLabel('read', `${args.filePaths.length} files`, '✓'));
+  ui.succeed();
   return results.join('\n\n');
 }
 
@@ -709,7 +614,7 @@ export function executeAddEnvironmentVariables(
   for (const name of args.envVarNames) {
     pendingEnvVars.add(name);
   }
-  quickAction('env', args.envVarNames.join(', '));
+  quickToolAction('addEnvironmentVariables', args.envVarNames.join(', '));
   return (
     `Queued ${args.envVarNames.length} environment variable(s): ${args.envVarNames.join(', ')}.\n\n` +
     `These will be set on the Convex deployment AFTER you finish generating code, during the final setup phase. ` +
@@ -750,7 +655,7 @@ export async function executeTool(
     case 'lookupDocs': {
       const args = toolInput as z.infer<typeof LookupDocsSchema>;
       for (const skill of args.skills) {
-        quickAction('docs', skill);
+        quickToolAction('lookupDocs', skill);
       }
       if (args.skills.length === 1) return readSkill(args.skills[0]);
       return readSkills(args.skills);
