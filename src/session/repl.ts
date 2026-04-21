@@ -21,6 +21,8 @@ import { stopActiveSpinner } from '../utils/liveSpinner.js';
 import type { Session } from './session.js';
 import type { TurnOutcome } from './planner.js';
 import { runFinalization } from '../commands/build.js';
+import { getSkillMetadataForStack } from '../agent/skills.js';
+import { checkCredits } from '../utils/credits.js';
 
 export interface ReplOptions {
   /** Whether this REPL was launched from a fresh `build` (first turn
@@ -34,8 +36,6 @@ export async function runRepl(
   session: Session,
   opts: ReplOptions = {},
 ): Promise<void> {
-  printWelcome(session);
-
   // ── Ctrl-C semantics ────────────────────────────────────────────────────
   //
   //   First Ctrl-C during an agent turn → request interrupt
@@ -310,8 +310,12 @@ async function handleSlashCommand(
 
     case 'clear':
       console.clear();
-      printWelcome(session);
       return false;
+
+    case 'options':
+    case 'config':
+    case 'settings':
+      return handleOptionsMenu(session);
 
     case 'finalize': {
       await runFinalization({
@@ -330,34 +334,16 @@ async function handleSlashCommand(
   }
 }
 
-// ─── UI helpers ─────────────────────────────────────────────────────────────
-
-function printWelcome(session: Session): void {
-  console.log();
-  console.log(
-    chalk.yellow.bold('BNA') + chalk.dim(' — conversational build session'),
-  );
-  console.log(chalk.dim(`  Project: ${session.projectRoot}`));
-  console.log(chalk.dim(`  Stack:   ${session.stack}`));
-  console.log();
-  console.log(
-    chalk.dim('Type anything to chat. ') +
-      chalk.cyan('/help') +
-      chalk.dim(' for commands, ') +
-      chalk.cyan('/exit') +
-      chalk.dim(' to quit.'),
-  );
-  console.log();
-}
-
 function printHelp(): void {
   const rows: Array<[string, string]> = [
     ['/help', 'show this help'],
+    ['/options', 'open the options menu'],
     ['/status', 'show session state and recent changes'],
     ['/history', 'show last 20 file operations'],
     ['/undo', 'revert the most recent file operation'],
     ['/modify <description>', 'ask the agent to modify the app'],
     ['/continue', 'pick up from where the agent left off'],
+    ['/finalize', 'run the finalization pipeline'],
     ['/clear', 'clear the screen'],
     ['/exit', 'save the session and quit'],
   ];
@@ -379,6 +365,96 @@ function printHelp(): void {
   console.log(
     chalk.dim('  • Press Ctrl-C twice within 2s (at the prompt) to exit.'),
   );
+  console.log();
+}
+
+// ─── Options menu (Claude-style) ────────────────────────────────────────────
+
+async function handleOptionsMenu(session: Session): Promise<boolean> {
+  const { choice } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'choice',
+      message: 'Options',
+      pageSize: 12,
+      choices: [
+        { name: 'Session status', value: 'status' },
+        { name: 'File history', value: 'history' },
+        { name: 'Undo last change', value: 'undo' },
+        { name: 'Skills available for this stack', value: 'skills' },
+        { name: 'Check credits', value: 'credits' },
+        { name: 'Run finalization pipeline', value: 'finalize' },
+        { name: 'Clear screen', value: 'clear' },
+        new inquirer.Separator(),
+        { name: 'Exit session', value: 'exit' },
+        { name: 'Back', value: 'cancel' },
+      ],
+    },
+  ]);
+
+  switch (choice) {
+    case 'status':
+      return handleSlashCommand(session, '/status');
+    case 'history':
+      return handleSlashCommand(session, '/history');
+    case 'undo':
+      return handleSlashCommand(session, '/undo');
+    case 'skills':
+      printSkills(session);
+      return false;
+    case 'credits':
+      await printCredits();
+      return false;
+    case 'finalize':
+      return handleSlashCommand(session, '/finalize');
+    case 'clear':
+      console.clear();
+      return false;
+    case 'exit':
+      log.info('Goodbye.');
+      return true;
+    case 'cancel':
+    default:
+      return false;
+  }
+}
+
+function printSkills(session: Session): void {
+  const skills = getSkillMetadataForStack(session.stack);
+  console.log();
+  if (skills.length === 0) {
+    log.info(chalk.dim('(no skills available for this stack)'));
+    console.log();
+    return;
+  }
+  const byTech = new Map<string, typeof skills>();
+  for (const s of skills) {
+    const bucket = byTech.get(s.tech) ?? [];
+    bucket.push(s);
+    byTech.set(s.tech, bucket);
+  }
+  log.info(
+    chalk.bold(`Skills (${skills.length}) — loaded on demand via lookupDocs`),
+  );
+  for (const [tech, bucket] of byTech) {
+    console.log(chalk.dim('  ' + tech));
+    for (const s of bucket) {
+      console.log(
+        '    ' + chalk.cyan(s.name.padEnd(30)) + chalk.dim(s.description),
+      );
+    }
+  }
+  console.log();
+}
+
+async function printCredits(): Promise<void> {
+  console.log();
+  const { credits } = await checkCredits();
+  if (credits < 0) {
+    log.warn('Could not fetch credits — check your connection.');
+  } else {
+    log.credits(credits);
+  }
   console.log();
 }
 
@@ -409,25 +485,39 @@ function formatOp(kind: string): string {
 
 // ─── Prompt (readline) ──────────────────────────────────────────────────────
 
-function prompt(session: Session): Promise<string> {
-  return new Promise((resolve, reject) => {
+export function prompt(session: Session): Promise<string> {
+  return new Promise((resolve) => {
+    const width = process.stdout.columns ?? 80;
+
+    const line = chalk.dim('─'.repeat(width));
+    const marker = chalk.yellow('❯');
+
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       terminal: true,
     });
-    const marker = chalk.yellow('❯ ');
-    rl.question(marker, (answer) => {
+
+    // Top border
+    console.log(line);
+
+    // Empty padding line (gives breathing space like Claude)
+    console.log();
+
+    // Input line
+    rl.question(`${marker} `, (answer) => {
+      // Space before bottom border
+      console.log();
+
+      // Bottom border
+      console.log(line);
+
       rl.close();
       resolve(answer);
     });
-    rl.on('close', () => {
-      // If the user hit Ctrl-D, readline closes without calling the
-      // question callback — reject so the main loop can exit cleanly.
-      resolve('');
-    });
+
+    rl.on('close', () => resolve(''));
     rl.on('SIGINT', () => {
-      // Let the outer SIGINT handler deal with it; just close the line.
       rl.close();
       resolve('');
     });

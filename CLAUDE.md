@@ -48,19 +48,33 @@ After context resolution:
 3. Start background `npm install` (InstallManager) unless `--no-install`
 4. Create Session → launch REPL
 5. First agent turn fires automatically with the user's prompt
-6. After first turn: prompt to run finalization (Convex init → TypeScript check → git init → Convex Auth → expo run) — skipped with `--no-run`
+6. After first turn: interactive prompt to run the finalization pipeline (5 steps: Convex init → TypeScript check + autofix → git init → Convex Auth → expo run:ios/android). `--no-run` skips only the final simulator launch (step 5); the rest of finalization still runs if the user confirms.
 
 ### Session & REPL (`src/session/`)
 
-- `session.ts` — Holds conversation history, file operation journal (for `/undo`), env vars, turn count. Serializes to `.bna/session.json` for resumability across CLI restarts.
-- `repl.ts` — Interactive readline loop; handles slash commands (`/help`, `/undo`, `/exit`, `/finalize`) and calls `agentTurn.ts` for each user message.
+- `session.ts` — Holds conversation history, file operation journal (for `/undo`), env vars, turn count. Serializes to `.bna/session.json` for resumability across CLI restarts. `ContextManager` is initialized with `keepRecentRounds: 3`, `toolResultMaxChars: 400`, `createFileContentMaxChars: 200`, `viewDedupWindow: 4`.
+- `repl.ts` — Interactive readline loop; handles slash commands and calls `agentTurn.ts` for each user message. Ctrl-C once interrupts the running agent turn; Ctrl-C twice within 2s exits. To resume a saved session, run `bna build` in (or with `--name` pointing to) the project directory — there is no separate `bna continue` CLI command, despite the hint printed at exit.
 - `agentTurn.ts` — Orchestrates one AI generation round.
 - `planner.ts` — Defines `TurnOutcome` (`complete | clarify | interrupted | error`) and the `askUser` tool. A turn is a single round of model→tools→model; if the model calls `askUser`, the loop exits with `clarify` and the REPL collects the answer as a new user turn.
 
+Full slash-command list (`/help` shows these at runtime):
+
+| Command | Description |
+| --- | --- |
+| `/help` | Show command list |
+| `/status` | Show session state and recent file changes |
+| `/history` | Show last 20 file operations |
+| `/undo` | Revert the most recent file operation |
+| `/modify <desc>` | Ask the agent to modify the app |
+| `/continue` | Ask the agent to pick up from where it left off |
+| `/finalize` | Run the finalization pipeline (Convex init → tsc → git → Convex Auth → expo run) |
+| `/clear` | Clear the screen |
+| `/exit` | Save the session and quit |
+
 ### Agent Core (`src/agent/`)
 
-- `agent.ts` — Core loop: streams SSE from `/cli/chat` API, parses tool calls, executes tools, loops until `end_turn` (max 30 rounds). Tracks token usage and credits.
-- `tools.ts` — 12 tool definitions (Zod schemas) + executors: `createFile`, `editFile`, `deleteFile`, `renameFile`, `viewFile`, `readMultipleFiles`, `listDirectory`, `searchFiles`, `runCommand`, `lookupDocs`, `addEnvironmentVariables`, `checkDependencies`. (`askUser` lives in `session/planner.ts`.)
+- `agent.ts` — Core loop: streams SSE from `/cli/chat` API (`CONVEX_SITE_URL` in `store.ts`), parses tool calls, executes tools, loops until `end_turn` (hard cap: `MAX_ROUNDS = 30`). Tracks token usage and credits via custom SSE event types `bna_credits` / `bna_credits_final`. HTTP 401 triggers a token refresh and retry; HTTP 402 means insufficient credits.
+- `tools.ts` — 12 tool definitions (Zod schemas) + executors: `createFile`, `editFile`, `deleteFile`, `renameFile`, `viewFile`, `readMultipleFiles`, `listDirectory`, `searchFiles`, `runCommand`, `lookupDocs`, `addEnvironmentVariables`, `checkDependencies`. (`askUser` lives in `session/planner.ts`.) `editFile` requires the `oldText` to appear exactly once in the file (under 1024 chars). `runCommand` default timeout is 180 s; npm-family commands are serialized behind the background install via `InstallManager`. `addEnvironmentVariables` only queues names — values are collected interactively during finalization.
 - `contextManager.ts` — Manages conversation window; deduplicates recent `viewFile` calls to avoid redundant context.
 - `skills.ts` — Auto-discovers and loads skills from `skills/<category>/<skill>/SKILL.md` on demand via `lookupDocs` tool.
 - `prompts.ts` — Assembles the system prompt by reading markdown fragments from the top-level `prompts/` directory. Layout: `prompts/system/role/<stack>.md`, `prompts/system/cli/<stack>.md`, `prompts/system/output/<stack>.md`, `prompts/frontend/<fe>.md`, `prompts/backend/<be>.md`, `prompts/system/secrets/<be|none>.md`, `prompts/system/example-data/<be|none>.md`, `prompts/system/formatting.md`. The cli md file supports a `{{SKILLS_CATALOG}}` placeholder substituted at load time.

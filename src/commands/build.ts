@@ -441,7 +441,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
 
   const freshToken = await revalidateAuth();
 
-  log.divider();
   log.info(chalk.bold('Starting build session'));
   if (!skipInstall) {
     log.info(chalk.dim('  • npm install — running in background'));
@@ -452,7 +451,6 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       '  • After the initial build, you can keep chatting to refine the app.',
     ),
   );
-  log.divider();
 
   // Create the session
   const session = new Session({
