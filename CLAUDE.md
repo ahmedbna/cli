@@ -76,8 +76,8 @@ Full slash-command list (`/help` shows these at runtime):
 - `agent.ts` — Headless agent loop (`runAgent`), used **only** by `tsCheck.ts` for TypeScript autofix during finalization. Not called during the interactive REPL. Tracks token usage and credits via custom SSE event types `bna_credits` / `bna_credits_final`.
 - `tools.ts` — 12 tool definitions (Zod schemas) + executors: `createFile`, `editFile`, `deleteFile`, `renameFile`, `viewFile`, `readMultipleFiles`, `listDirectory`, `searchFiles`, `runCommand`, `lookupDocs`, `addEnvironmentVariables`, `checkDependencies`. (`askUser` / `finish` live in `session/planner.ts`.) `editFile` requires the `oldText` to appear exactly once in the file (under 1024 chars). `runCommand` default timeout is 180 s; npm-family commands are serialized behind the background install via `InstallManager`. `addEnvironmentVariables` only queues names — values are collected interactively during finalization.
 - `contextManager.ts` — Manages conversation window; deduplicates recent `viewFile` calls to avoid redundant context.
-- `skills.ts` — Auto-discovers and loads skills from `skills/<category>/<skill>/SKILL.md` on demand via `lookupDocs` tool.
-- `prompts.ts` — Assembles the system prompt by reading markdown fragments from the top-level `prompts/` directory. Layout: `prompts/template/<stack>.md` (consolidated role + CLI mode + tools + workflow + output + secrets + example-data), `prompts/frontend/<fe>.md`, `prompts/backend/<be>.md`, `prompts/formatting.md`. The template md supports a `{{SKILLS_CATALOG}}` placeholder substituted at load time.
+- `skills.ts` — Auto-discovers and loads skills from `prompts/skills/<category>/<skill>/SKILL.md` on demand via `lookupDocs` tool.
+- `prompts.ts` — Loads the single standalone template `prompts/template/<stack>.md` for the selected stack and substitutes the `{{SKILLS_CATALOG}}` placeholder at load time. Each template is fully self-contained (no other fragments are concatenated).
 
 ### Key Patterns
 
@@ -118,11 +118,11 @@ The terminal UI is built with [Ink](https://github.com/vadimdemedes/ink) (React 
 
 ### Templates
 
-`templates/expo-convex/` — The only currently active template. Uses Expo Router (file-based routing) with Convex backend and `@convex-dev/auth` pre-wired. Modifying it affects every newly generated app. Supabase/Swift stacks are stubbed in `stacks.ts` but commented out; add a `templates/<frontend>-<backend>/` directory and update `SUPPORTED_STACKS` to activate one.
+Three active templates under `templates/`: `expo-convex/`, `expo-supabase/`, and `expo/` (no backend). All use Expo Router with the same component/theme structure. Modifying a template affects every newly generated app for that stack. To add a new stack: drop a `templates/<stack>/` directory, add a `prompts/template/<stack>.md`, and add the stack id to `SUPPORTED_STACKS` in `stacks.ts`.
 
 ### Skills
 
-`prompts/skills/{convex,expo}/<skill>/SKILL.md` — Each skill is self-contained documentation the agent reads to guide code generation for that capability (e.g., `convex/convex-file-storage`, `expo/expo-animations`). Adding a new skill folder under the right category makes it available to the agent automatically via `lookupDocs`.
+`prompts/skills/{convex,expo,supabase}/<skill>/SKILL.md` — Each skill is self-contained documentation the agent reads to guide code generation for that capability (e.g., `convex/convex-file-storage`, `expo/expo-animations`). Adding a new skill folder under the right category makes it available to the agent automatically via `lookupDocs`.
 
 ## Build Config
 
