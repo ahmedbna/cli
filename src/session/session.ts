@@ -30,7 +30,7 @@ export interface FileJournalEntry {
 
 export interface SessionSnapshot {
   projectRoot: string;
-  stack: 'expo' | 'expo-convex';
+  stack: 'expo' | 'expo-convex' | 'expo-supabase';
   createdAt: number;
   turns: number;
   journal: FileJournalEntry[];
@@ -44,7 +44,7 @@ export interface SessionSnapshot {
 
 export class Session {
   readonly projectRoot: string;
-  readonly stack: 'expo' | 'expo-convex';
+  readonly stack: 'expo' | 'expo-convex' | 'expo-supabase';
   readonly initialPrompt: string;
   readonly context: ContextManager;
   readonly installManager: InstallManager;
@@ -66,7 +66,7 @@ export class Session {
 
   constructor(opts: {
     projectRoot: string;
-    stack: 'expo' | 'expo-convex';
+    stack: 'expo' | 'expo-convex' | 'expo-supabase';
     initialPrompt: string;
     authToken: string;
     installManager: InstallManager;

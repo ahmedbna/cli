@@ -25,7 +25,7 @@ const MAX_ROUNDS = 30;
 export interface AgentOptions {
   projectRoot: string;
   prompt: string;
-  stack: 'expo' | 'expo-convex';
+  stack: 'expo' | 'expo-convex' | 'expo-supabase';
   authToken?: string;
   installManager: InstallManager;
 }

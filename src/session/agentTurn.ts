@@ -32,6 +32,17 @@ import { emit, isUiActive } from '../ui/events.js';
 const MAX_ROUNDS_PER_TURN = 30;
 const LONG_TURN_THRESHOLD = 20;
 
+function stackLabel(stack: 'expo' | 'expo-convex' | 'expo-supabase'): string {
+  switch (stack) {
+    case 'expo-convex':
+      return 'Expo + Convex (full-stack)';
+    case 'expo-supabase':
+      return 'Expo + Supabase (full-stack)';
+    case 'expo':
+      return 'Expo only';
+  }
+}
+
 // ─── SSE event types (unchanged) ───────────────────────────────────────────
 
 interface TextDelta {
@@ -109,7 +120,7 @@ export async function runAgentTurn(
     const bootstrap =
       `You are BNA, building a mobile app from the user's description:\n\n${userMessage}\n\n` +
       `The project root is: ${session.projectRoot}\n` +
-      `Stack: ${session.stack === 'expo-convex' ? 'Expo + Convex (full-stack)' : 'Expo only'}\n\n`;
+      `Stack: ${stackLabel(session.stack)}\n\n`;
     session.context.setInitialMessage(bootstrap);
   } else {
     session.context.addUserText(userMessage);

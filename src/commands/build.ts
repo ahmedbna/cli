@@ -38,6 +38,7 @@ import {
   isBackend,
   type Frontend,
   type Backend,
+  type StackId,
 } from './stacks.js';
 
 interface GenerateOptions {
@@ -359,7 +360,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     backend = picked;
   }
 
-  let stack: 'expo' | 'expo-convex';
+  let stack: StackId;
   try {
     stack = combineStack(frontend, backend);
   } catch (err: any) {
@@ -585,13 +586,18 @@ async function startFreshSessionInExistingProject(
   ]);
 
   // Detect stack from package.json (best-effort)
-  let stack: 'expo' | 'expo-convex' = 'expo';
+  let stack: StackId = 'expo';
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'),
     );
     if (pkg.dependencies?.convex || pkg.devDependencies?.convex) {
       stack = 'expo-convex';
+    } else if (
+      pkg.dependencies?.['@supabase/supabase-js'] ||
+      pkg.devDependencies?.['@supabase/supabase-js']
+    ) {
+      stack = 'expo-supabase';
     }
   } catch {
     /* ignore */
@@ -637,7 +643,7 @@ async function waitForInstall(installManager: InstallManager): Promise<void> {
 
 interface FinalizeOptions {
   session: Session;
-  stack: 'expo' | 'expo-convex';
+  stack: StackId;
   installManager: InstallManager;
   authToken: string;
   skipRun: boolean;
@@ -685,8 +691,16 @@ export async function runFinalization(opts: FinalizeOptions): Promise<void> {
     } else {
       log.success('Convex project initialized.');
     }
+  } else if (stack === 'expo-supabase') {
+    log.info(
+      chalk.dim(
+        'Step 1/5 — Convex init skipped (Supabase stack). Remember to run ' +
+          chalk.cyan('npx supabase start') +
+          chalk.dim(' and copy the printed keys into .env.local.'),
+      ),
+    );
   } else {
-    log.info(chalk.dim('Step 1/5 — Convex init skipped (Expo-only stack).'));
+    log.info(chalk.dim('Step 1/5 — Backend init skipped (Expo-only stack).'));
   }
 
   // ── Step 2: TypeScript check + autofix ─────────────────────────────────
@@ -824,14 +838,30 @@ export async function runFinalization(opts: FinalizeOptions): Promise<void> {
         'The agent requested environment variables: ' +
           pendingEnvs.map((n) => chalk.yellow(n)).join(', '),
       );
-      log.info(
-        chalk.dim(
-          '  Add these to your Expo app via app.json `extra` or a .env file as appropriate.',
-        ),
-      );
+      if (stack === 'expo-supabase') {
+        log.info(
+          chalk.dim(
+            '  Add these to .env.local alongside your EXPO_PUBLIC_SUPABASE_URL and anon key.',
+          ),
+        );
+      } else {
+        log.info(
+          chalk.dim(
+            '  Add these to your Expo app via app.json `extra` or a .env file as appropriate.',
+          ),
+        );
+      }
       clearPendingEnvVars();
     }
-    log.info(chalk.dim('Step 4/5 — Convex Auth skipped (Expo-only stack).'));
+    if (stack === 'expo-supabase') {
+      log.info(
+        chalk.dim(
+          'Step 4/5 — Convex Auth skipped (Supabase stack uses SQL migrations + RLS).',
+        ),
+      );
+    } else {
+      log.info(chalk.dim('Step 4/5 — Auth setup skipped (Expo-only stack).'));
+    }
   }
 
   // ── Step 5: Launch the app in the simulator ────────────────────────────
@@ -886,7 +916,7 @@ export async function runFinalization(opts: FinalizeOptions): Promise<void> {
 
 function printReadyFooter(
   projectRoot: string,
-  stack: 'expo' | 'expo-convex',
+  stack: StackId,
   expoCommand: string,
   platform: string,
 ): void {
@@ -899,6 +929,8 @@ function printReadyFooter(
   if (projectRoot !== cwd) log.info(`  cd ${projectName}`);
   if (stack === 'expo-convex') {
     log.info('  npx convex dev          ' + chalk.dim('# Convex backend'));
+  } else if (stack === 'expo-supabase') {
+    log.info('  npx supabase start      ' + chalk.dim('# Local Supabase stack'));
   }
   log.info(`  ${expoCommand}    ` + chalk.dim(`# ${platform} dev build`));
   console.log();

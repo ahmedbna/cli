@@ -160,7 +160,7 @@ function formatForAgent(diagnostics: TsDiagnostic[]): string {
 export async function typeCheckAndFix(opts: {
   projectRoot: string;
   installManager: InstallManager;
-  stack: 'expo' | 'expo-convex';
+  stack: 'expo' | 'expo-convex' | 'expo-supabase';
   authToken?: string;
 }): Promise<boolean> {
   const { projectRoot, installManager, stack, authToken } = opts;

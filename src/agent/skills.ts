@@ -1,13 +1,14 @@
 // src/agent/skills.ts
 // Skill resolver — auto-discovers individual skill folders at runtime.
 //
-// Skills are grouped by the technology they target. The directory layout is:
+// Skills live under `prompts/skills/` and are grouped by the technology they
+// target. The directory layout is:
 //
-//   skills/convex/convex-file-storage/SKILL.md
-//   skills/convex/convex-pagination/SKILL.md
-//   skills/expo/expo-animations/SKILL.md
-//   skills/expo/expo-routing/SKILL.md
-//   skills/supabase/...
+//   prompts/skills/convex/convex-file-storage/SKILL.md
+//   prompts/skills/convex/convex-pagination/SKILL.md
+//   prompts/skills/expo/expo-animations/SKILL.md
+//   prompts/skills/expo/expo-routing/SKILL.md
+//   prompts/skills/supabase/...
 //
 // The parent folder (convex, expo, supabase) is the skill's `tech` tag.
 // The agent only sees skills that match the technologies in the selected
@@ -18,7 +19,7 @@ import path from 'path';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type StackId = 'expo' | 'expo-convex';
+export type StackId = 'expo' | 'expo-convex' | 'expo-supabase';
 export type Tech = string;
 
 export interface SkillMetadata {
@@ -39,7 +40,7 @@ function resolveSkillsDir(): string {
 
   let dir = path.dirname(new URL(import.meta.url).pathname);
   for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, 'skills');
+    const candidate = path.join(dir, 'prompts', 'skills');
     if (fs.existsSync(candidate)) {
       cachedSkillsDir = candidate;
       return candidate;
@@ -47,15 +48,15 @@ function resolveSkillsDir(): string {
     dir = path.dirname(dir);
   }
 
-  const cwdCandidate = path.join(process.cwd(), 'skills');
+  const cwdCandidate = path.join(process.cwd(), 'prompts', 'skills');
   if (fs.existsSync(cwdCandidate)) {
     cachedSkillsDir = cwdCandidate;
     return cwdCandidate;
   }
 
   throw new Error(
-    'Skills directory not found. Expected at <package>/skills/. ' +
-      'Ensure the skills/ directory is included in your npm package.',
+    'Skills directory not found. Expected at <package>/prompts/skills/. ' +
+      'Ensure the prompts/skills/ directory is included in your npm package.',
   );
 }
 

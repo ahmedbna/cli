@@ -7,15 +7,13 @@
 // To add a new option:
 //   1. Add it to `FRONTENDS` or `BACKENDS` below.
 //   2. Add the resulting combo to `SUPPORTED_STACKS`.
-//   3. Drop a template directory at `templates/<frontend>-<backend>/`.
+//   3. Drop a template directory at `templates/<stack>/`.
 //   4. Wire any stack-specific prompt/finalization branches where `stack` is used.
-//
-// For now, the only supported combo is expo + convex.
 
 export type Frontend = 'expo'; // future: | 'swift'
-export type Backend = 'convex'; // future: | 'supabase'
+export type Backend = 'convex' | 'supabase' | 'none';
 
-export type StackId = `${Frontend}-${Backend}`;
+export type StackId = 'expo' | 'expo-convex' | 'expo-supabase';
 
 export interface StackChoice<V extends string> {
   value: V;
@@ -38,13 +36,26 @@ export const BACKENDS: StackChoice<Backend>[] = [
     name: 'Convex',
     description: 'Real-time TypeScript backend with auth + storage',
   },
-  // { value: 'supabase', name: 'Supabase', description: 'Postgres + Auth' },
+  {
+    value: 'supabase',
+    name: 'Supabase',
+    description: 'Postgres + Auth + Storage via SQL migrations',
+  },
+  {
+    value: 'none',
+    name: 'None',
+    description: 'Frontend only — no backend',
+  },
 ];
 
-const SUPPORTED_STACKS = new Set<StackId>(['expo-convex']);
+const SUPPORTED_STACKS = new Set<StackId>([
+  'expo',
+  'expo-convex',
+  'expo-supabase',
+]);
 
 export function combineStack(frontend: Frontend, backend: Backend): StackId {
-  const id = `${frontend}-${backend}` as StackId;
+  const id = (backend === 'none' ? frontend : `${frontend}-${backend}`) as StackId;
   if (!SUPPORTED_STACKS.has(id)) {
     const supported = Array.from(SUPPORTED_STACKS).join(', ');
     throw new Error(
