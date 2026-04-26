@@ -540,12 +540,12 @@ function processBackendEvent(
     case 'content_block_start': {
       const cb = event.content_block;
       if (cb.type === 'text') {
-        const block = { type: 'text', text: cb.text ?? '' };
+        const block = { type: 'text' as const, text: cb.text ?? '' };
         blocks.push(block);
         indexToBlock.set(event.index, block);
       } else {
         const block = {
-          type: 'tool_use',
+          type: 'tool_use' as const,
           id: cb.id,
           name: cb.name,
           inputJson: '',
