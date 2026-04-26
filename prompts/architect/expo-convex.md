@@ -31,6 +31,7 @@ Convex uses a validator system that maps to TypeScript types. When specifying fi
 - Optional fields: set `optional: true`
 
 NEVER use:
+
 - `Map<...>` or `Set<...>` — Convex doesn't support these
 - `Date` — use `number` (Unix milliseconds) and document it in `notes`
 - `any` — be specific
@@ -39,7 +40,7 @@ NEVER use:
 
 Every Convex app has `...authTables` from `@convex-dev/auth/server` and a `users` table. You always include `users` in your `dataModel` with these fields:
 
-```
+```ts
 users:
   email: string (optional)
   name: string (optional)
@@ -74,6 +75,7 @@ Names map to Convex files: `posts.list` → `convex/posts.ts` exporting `list`. 
 Group related functions in the same file: `posts.list`, `posts.create`, `posts.delete`. Auth functions go in `auth.ts` (already provided by template — only add to it if you need additional auth flows).
 
 The template already provides:
+
 - `auth.loggedInUser` — current user or null
 - `users.get` — current user (throws if unauthed)
 - `users.getAll` — other users
@@ -94,15 +96,15 @@ Only re-list these in `apiContracts` if your screens use them. Do not duplicate 
 
 Use SF Symbols (iOS) and Feather (Android) names. Common pairs:
 
-| iOS (SF) | Android (Feather) | Meaning |
-|---|---|---|
-| `house.fill` | `home` | Home |
-| `gear` | `settings` | Settings |
-| `magnifyingglass` | `search` | Search |
-| `person.fill` | `user` | Profile |
-| `bell.fill` | `bell` | Notifications |
-| `flame.fill` | `zap` | Streaks/energy |
-| `chart.bar.fill` | `bar-chart-2` | Stats |
+| iOS (SF)          | Android (Feather) | Meaning        |
+| ----------------- | ----------------- | -------------- |
+| `house.fill`      | `home`            | Home           |
+| `gear`            | `settings`        | Settings       |
+| `magnifyingglass` | `search`          | Search         |
+| `person.fill`     | `user`            | Profile        |
+| `bell.fill`       | `bell`            | Notifications  |
+| `flame.fill`      | `zap`             | Streaks/energy |
+| `chart.bar.fill`  | `bar-chart-2`     | Stats          |
 
 ### UI components
 
@@ -140,10 +142,12 @@ Pick a `palette` that fits the domain. **Avoid `monochrome` unless the app is ge
 ## Env vars
 
 Only list env vars the user MUST provide for the app to work:
+
 - API keys for external services (`OPENAI_API_KEY`, `STRIPE_SECRET_KEY`, etc.)
 - Third-party SDK tokens
 
 Do NOT list:
+
 - `CONVEX_URL` — handled by the template
 - Auth provider secrets — handled by `npx @convex-dev/auth`
 
@@ -184,13 +188,13 @@ Before calling `proposeBlueprint`, mentally walk through it:
     "slug": "streaks",
     "bundleId": "com.ahmedbna.streaks",
     "scheme": "streaks",
-    "description": "A daily habit tracker that gamifies consistency with streaks and a friends leaderboard."
+    "description": "A daily habit tracker that gamifies consistency with streaks and a friends leaderboard.",
   },
   "theme": {
     "palette": "forest",
     "rationale": "Habit-building feels organic and earned; deep greens and warm accents reinforce the sense of growth without being saccharine.",
     "accentHint": "moss",
-    "tone": "friendly"
+    "tone": "friendly",
   },
   "screens": [
     {
@@ -201,7 +205,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "tabIcon": { "ios": "flame.fill", "android": "zap" },
       "reads": ["habits.listForToday"],
       "writes": ["habits.toggleToday"],
-      "uiComponents": ["text", "button", "card", "spinner"]
+      "uiComponents": ["text", "button", "card", "spinner"],
     },
     {
       "route": "(home)/leaderboard",
@@ -211,7 +215,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "tabIcon": { "ios": "chart.bar.fill", "android": "bar-chart-2" },
       "reads": ["leaderboard.list"],
       "writes": [],
-      "uiComponents": ["text", "card"]
+      "uiComponents": ["text", "card"],
     },
     {
       "route": "(home)/settings",
@@ -221,8 +225,8 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "tabIcon": { "ios": "gear", "android": "settings" },
       "reads": ["auth.loggedInUser", "habits.listAll"],
       "writes": ["habits.create", "habits.delete", "users.update"],
-      "uiComponents": ["text", "button", "input", "card"]
-    }
+      "uiComponents": ["text", "button", "input", "card"],
+    },
   ],
   "dataModel": [
     {
@@ -232,31 +236,31 @@ Before calling `proposeBlueprint`, mentally walk through it:
         { "name": "name", "type": "string", "optional": true },
         { "name": "image", "type": "string | null", "optional": true },
         { "name": "isAnonymous", "type": "boolean", "optional": true },
-        { "name": "displayHandle", "type": "string", "optional": true }
+        { "name": "displayHandle", "type": "string", "optional": true },
       ],
-      "indexes": [{ "name": "by_email", "fields": ["email"] }]
+      "indexes": [{ "name": "by_email", "fields": ["email"] }],
     },
     {
       "name": "habits",
       "fields": [
         { "name": "userId", "type": "Id<\"users\">" },
         { "name": "name", "type": "string" },
-        { "name": "createdAt", "type": "number" }
+        { "name": "createdAt", "type": "number" },
       ],
-      "indexes": [{ "name": "by_user", "fields": ["userId"] }]
+      "indexes": [{ "name": "by_user", "fields": ["userId"] }],
     },
     {
       "name": "habitLogs",
       "fields": [
         { "name": "habitId", "type": "Id<\"habits\">" },
         { "name": "userId", "type": "Id<\"users\">" },
-        { "name": "dayKey", "type": "string", "index": true }
+        { "name": "dayKey", "type": "string", "index": true },
       ],
       "indexes": [
         { "name": "by_habit_and_day", "fields": ["habitId", "dayKey"] },
-        { "name": "by_user_and_day", "fields": ["userId", "dayKey"] }
-      ]
-    }
+        { "name": "by_user_and_day", "fields": ["userId", "dayKey"] },
+      ],
+    },
   ],
   "apiContracts": [
     {
@@ -265,7 +269,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "description": "Returns the current user's habits with a boolean indicating if each is checked off today.",
       "args": [],
       "returns": "{ id: Id<\"habits\">; name: string; checkedToday: boolean; streak: number }[]",
-      "authRequired": true
+      "authRequired": true,
     },
     {
       "name": "habits.toggleToday",
@@ -273,7 +277,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "description": "Toggle today's check-off state for a habit.",
       "args": [{ "name": "habitId", "type": "Id<\"habits\">" }],
       "returns": "{ checkedToday: boolean; streak: number }",
-      "authRequired": true
+      "authRequired": true,
     },
     {
       "name": "habits.listAll",
@@ -281,7 +285,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "description": "All of the current user's habits.",
       "args": [],
       "returns": "{ id: Id<\"habits\">; name: string; createdAt: number }[]",
-      "authRequired": true
+      "authRequired": true,
     },
     {
       "name": "habits.create",
@@ -289,7 +293,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "description": "Create a new habit for the current user.",
       "args": [{ "name": "name", "type": "string" }],
       "returns": "Id<\"habits\">",
-      "authRequired": true
+      "authRequired": true,
     },
     {
       "name": "habits.delete",
@@ -297,7 +301,7 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "description": "Delete a habit and all its logs.",
       "args": [{ "name": "habitId", "type": "Id<\"habits\">" }],
       "returns": "void",
-      "authRequired": true
+      "authRequired": true,
     },
     {
       "name": "leaderboard.list",
@@ -305,12 +309,12 @@ Before calling `proposeBlueprint`, mentally walk through it:
       "description": "All users ranked by their longest current streak across any habit.",
       "args": [],
       "returns": "{ userId: Id<\"users\">; name: string; image: string | null; topStreak: number }[]",
-      "authRequired": true
-    }
+      "authRequired": true,
+    },
   ],
   "envVars": [],
   "skillsNeeded": [],
-  "architectNotes": "dayKey is YYYY-MM-DD in user's local time. Backend should compute streaks by walking habitLogs ordered by dayKey desc until a gap appears."
+  "architectNotes": "dayKey is YYYY-MM-DD in user's local time. Backend should compute streaks by walking habitLogs ordered by dayKey desc until a gap appears.",
 }
 ```
 

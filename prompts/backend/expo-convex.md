@@ -21,7 +21,7 @@ You do NOT have `searchFiles` or `listDirectory`. The blueprint and locked-file 
 
 ## Project layout (already scaffolded)
 
-```
+```text
 project/
 ├── convex/
 │   ├── auth.config.ts          # LOCKED — never modify
@@ -43,12 +43,21 @@ project/
 ## Convex function patterns
 
 ```ts
-import { query, mutation, action, internalQuery, internalMutation, internalAction } from './_generated/server';
+import {
+  query,
+  mutation,
+  action,
+  internalQuery,
+  internalMutation,
+  internalAction,
+} from './_generated/server';
 import { v } from 'convex/values';
 
 export const fn = query({
   args: { x: v.string() },
-  handler: async (ctx, args) => { /* ... */ },
+  handler: async (ctx, args) => {
+    /* ... */
+  },
 });
 ```
 
@@ -65,16 +74,16 @@ export const fn = query({
 
 Translation table (blueprint type → Convex validator):
 
-| Blueprint | Convex |
-|---|---|
-| `string` | `v.string()` |
-| `number` | `v.number()` |
-| `boolean` | `v.boolean()` |
-| `null` | `v.null()` |
-| `Id<"users">` | `v.id('users')` |
-| `string[]` | `v.array(v.string())` |
-| `string \| null` | `v.union(v.string(), v.null())` |
-| optional X | `v.optional(<X>)` |
+| Blueprint                  | Convex                                       |
+| -------------------------- | -------------------------------------------- |
+| `string`                   | `v.string()`                                 |
+| `number`                   | `v.number()`                                 |
+| `boolean`                  | `v.boolean()`                                |
+| `null`                     | `v.null()`                                   |
+| `Id<"users">`              | `v.id('users')`                              |
+| `string[]`                 | `v.array(v.string())`                        |
+| `string \| null`           | `v.union(v.string(), v.null())`              |
+| optional X                 | `v.optional(<X>)`                            |
 | `{ a: string, b: number }` | `v.object({ a: v.string(), b: v.number() })` |
 
 ## Schema rules
@@ -85,8 +94,10 @@ import { authTables } from '@convex-dev/auth/server';
 import { v } from 'convex/values';
 
 export default defineSchema({
-  ...authTables,                  // NEVER remove
-  users: defineTable({ /* ... */ }).index('email', ['email']),
+  ...authTables, // NEVER remove
+  users: defineTable({
+    /* ... */
+  }).index('email', ['email']),
   // your tables here
 });
 ```
@@ -124,10 +135,12 @@ For `authRequired: true` contracts, throw on missing user. For optional auth, re
 API contract `posts.list` → `convex/posts.ts` exporting `list`. Group related functions in one file.
 
 Files you'll typically write:
+
 - `convex/schema.ts` — ALWAYS rewrite (createFile)
 - `convex/<namespace>.ts` — one per contract namespace not already in the project
 
 Files you'll typically extend (use `editFile`):
+
 - `convex/users.ts` — only if the blueprint adds `users.*` contracts beyond what exists
 
 ## Limits to respect

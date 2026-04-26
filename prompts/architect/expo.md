@@ -33,10 +33,10 @@ If there's persisted state (notes, settings, todos), specify it as if it were a 
     { "name": "id", "type": "string" },
     { "name": "title", "type": "string" },
     { "name": "body", "type": "string" },
-    { "name": "createdAt", "type": "number" }
+    { "name": "createdAt", "type": "number" },
   ],
   "indexes": [],
-  "notes": "Stored as JSON array under AsyncStorage key 'notes'."
+  "notes": "Stored as JSON array under AsyncStorage key 'notes'.",
 }
 ```
 
@@ -53,15 +53,15 @@ For Expo-only apps, `reads` and `writes` on screens should reference local data 
 
 ### Tab icons (SF Symbols + Feather)
 
-| iOS (SF) | Android (Feather) | Meaning |
-|---|---|---|
-| `house.fill` | `home` | Home |
-| `gear` | `settings` | Settings |
-| `magnifyingglass` | `search` | Search |
-| `person.fill` | `user` | Profile |
-| `bell.fill` | `bell` | Notifications |
-| `flame.fill` | `zap` | Streaks/energy |
-| `chart.bar.fill` | `bar-chart-2` | Stats |
+| iOS (SF)          | Android (Feather) | Meaning        |
+| ----------------- | ----------------- | -------------- |
+| `house.fill`      | `home`            | Home           |
+| `gear`            | `settings`        | Settings       |
+| `magnifyingglass` | `search`          | Search         |
+| `person.fill`     | `user`            | Profile        |
+| `bell.fill`       | `bell`            | Notifications  |
+| `flame.fill`      | `zap`             | Streaks/energy |
+| `chart.bar.fill`  | `bar-chart-2`     | Stats          |
 
 ### UI components
 
@@ -125,13 +125,13 @@ Before calling `proposeBlueprint`:
     "slug": "pocket-notes",
     "bundleId": "com.ahmedbna.pocketnotes",
     "scheme": "pocket-notes",
-    "description": "A minimal note-taking app with local-only storage and quick search."
+    "description": "A minimal note-taking app with local-only storage and quick search.",
   },
   "theme": {
     "palette": "warm-earth",
     "rationale": "A calm, paper-like feel suits a personal note-taking app — warm neutrals with a single saturated accent for actions.",
     "accentHint": "burnt-sienna",
-    "tone": "friendly"
+    "tone": "friendly",
   },
   "screens": [
     {
@@ -143,7 +143,7 @@ Before calling `proposeBlueprint`:
       "reads": [],
       "writes": [],
       "uiComponents": ["text", "input", "card", "button"],
-      "notes": "reads localStorage:notes; writes go through a useNotes() hook."
+      "notes": "reads localStorage:notes; writes go through a useNotes() hook.",
     },
     {
       "route": "note/[id]",
@@ -152,7 +152,7 @@ Before calling `proposeBlueprint`:
       "isTab": false,
       "reads": [],
       "writes": [],
-      "uiComponents": ["text", "input", "button"]
+      "uiComponents": ["text", "input", "button"],
     },
     {
       "route": "(home)/settings",
@@ -162,8 +162,8 @@ Before calling `proposeBlueprint`:
       "tabIcon": { "ios": "gear", "android": "settings" },
       "reads": [],
       "writes": [],
-      "uiComponents": ["text", "button"]
-    }
+      "uiComponents": ["text", "button"],
+    },
   ],
   "dataModel": [
     {
@@ -173,16 +173,16 @@ Before calling `proposeBlueprint`:
         { "name": "title", "type": "string" },
         { "name": "body", "type": "string" },
         { "name": "createdAt", "type": "number" },
-        { "name": "updatedAt", "type": "number" }
+        { "name": "updatedAt", "type": "number" },
       ],
       "indexes": [],
-      "notes": "AsyncStorage key 'notes', JSON array, sorted by updatedAt desc."
-    }
+      "notes": "AsyncStorage key 'notes', JSON array, sorted by updatedAt desc.",
+    },
   ],
   "apiContracts": [],
   "envVars": [],
   "skillsNeeded": [],
-  "architectNotes": "Use AsyncStorage. Wrap reads/writes in a useNotes() hook in hooks/useNotes.ts. Searching is in-memory (filter on title+body)."
+  "architectNotes": "Use AsyncStorage. Wrap reads/writes in a useNotes() hook in hooks/useNotes.ts. Searching is in-memory (filter on title+body).",
 }
 ```
 

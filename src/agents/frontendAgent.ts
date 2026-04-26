@@ -1,12 +1,15 @@
 // src/agents/frontendAgent.ts
 //
 // Phase 3 agent. Takes a Blueprint (with the post-backend contracts) and
-// writes the frontend: theme, UI components, screens, ARCHITECTURE.md.
+// writes the frontend: theme, UI components, screens.
 //
 // Conversation is ISOLATED from both the Architect and Backend Builder:
 //   - Fresh messages array
 //   - No backend implementation history
 //   - Only sees: blueprint (with FINAL contracts) + project root
+//
+// The blueprint itself (persisted at .bna/blueprint.json) is the structural
+// record of the app design intent from that file via agentTurn's blueprint context injection.
 //
 // The frontend agent has access to the full filesystem tool belt because
 // it operates over a wider surface (theme, components, multiple screens,
@@ -368,11 +371,7 @@ function buildFrontendUserMessage(
   }
 
   if (blueprint.architectNotes) {
-    sections.push(
-      '',
-      '## Architect notes',
-      blueprint.architectNotes,
-    );
+    sections.push('', '## Architect notes', blueprint.architectNotes);
   }
 
   sections.push(
@@ -384,8 +383,7 @@ function buildFrontendUserMessage(
     '3. Build/restyle `components/ui/*` for every component referenced in screens.',
     '4. Implement `app/(home)/_layout.tsx` with NativeTabs for the tab screens.',
     '5. Implement every screen in `screens` using only the listed APIs and components.',
-    '6. Write `ARCHITECTURE.md` at project root summarizing the architecture.',
-    '7. Call `finish({ summary })` when done.',
+    '6. Call `finish({ summary })` when done.',
     '',
     'Do NOT modify any backend file (convex/* or supabase/*). The backend is settled.',
   );

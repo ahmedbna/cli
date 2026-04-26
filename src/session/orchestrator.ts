@@ -4,7 +4,7 @@
 //
 //   Phase 1: Architect      — produces a Blueprint
 //   Phase 2: Backend Builder — implements convex/* or supabase/* (skipped for stack === 'expo')
-//   Phase 3: Frontend Builder — implements theme, components, screens, ARCHITECTURE.md
+//   Phase 3: Frontend Builder — implements theme, components, screens
 //
 // Critically, each phase runs in its own HTTP request with its own `messages: []`.
 // Token cost is paid ONLY for the slice each agent needs.
@@ -13,8 +13,10 @@
 // fall back to the single-agent path in agentTurn.ts — the multi-agent pipeline
 // is build-only.
 //
-// The Blueprint is persisted to .bna/blueprint.json so follow-up turns can
-// reference it (and so resuming a session restores design intent).
+// The Blueprint is persisted to .bna/blueprint.json and is the canonical
+// itself is persisted to .bna/session.json with file-op journal and context
+// history. Follow-up turns rehydrate design intent from the blueprint via
+// agentTurn's buildBlueprintContext.
 
 import path from 'path';
 import fs from 'fs';

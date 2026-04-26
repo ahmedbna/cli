@@ -90,6 +90,7 @@ API contracts map to the `supabase/api/` module: `posts.list` → `supabase/api/
 - `action` — multi-step or external-API operation (e.g. calling OpenAI)
 
 The template already provides:
+
 - `auth.loggedInUser` — current user or null
 - `auth.signIn`, `auth.signUp`, `auth.signOut`
 - `users.get`, `users.getByEmail`, `users.getAll`, `users.update`, `users.subscribeToSelf`
@@ -113,15 +114,15 @@ API functions throw `ApiError` rather than returning `{ data, error }`. When spe
 
 ### Tab icons (SF Symbols + Feather)
 
-| iOS (SF) | Android (Feather) | Meaning |
-|---|---|---|
-| `house.fill` | `home` | Home |
-| `gear` | `settings` | Settings |
-| `magnifyingglass` | `search` | Search |
-| `person.fill` | `user` | Profile |
-| `bell.fill` | `bell` | Notifications |
-| `flame.fill` | `zap` | Streaks/energy |
-| `chart.bar.fill` | `bar-chart-2` | Stats |
+| iOS (SF)          | Android (Feather) | Meaning        |
+| ----------------- | ----------------- | -------------- |
+| `house.fill`      | `home`            | Home           |
+| `gear`            | `settings`        | Settings       |
+| `magnifyingglass` | `search`          | Search         |
+| `person.fill`     | `user`            | Profile        |
+| `bell.fill`       | `bell`            | Notifications  |
+| `flame.fill`      | `zap`             | Streaks/energy |
+| `chart.bar.fill`  | `bar-chart-2`     | Stats          |
 
 ### UI components
 
@@ -190,13 +191,13 @@ Before calling `proposeBlueprint`:
     "slug": "huddle",
     "bundleId": "com.ahmedbna.huddle",
     "scheme": "huddle",
-    "description": "Small-group chat app with live typing indicators and reactions."
+    "description": "Small-group chat app with live typing indicators and reactions.",
   },
   "theme": {
     "palette": "sunset",
     "rationale": "Warm and conversational palette to feel alive and personal, matching the close-friends use case.",
     "accentHint": "coral",
-    "tone": "friendly"
+    "tone": "friendly",
   },
   "screens": [
     {
@@ -207,7 +208,7 @@ Before calling `proposeBlueprint`:
       "tabIcon": { "ios": "bubble.left.fill", "android": "message-circle" },
       "reads": ["groups.list"],
       "writes": [],
-      "uiComponents": ["text", "card", "spinner"]
+      "uiComponents": ["text", "card", "spinner"],
     },
     {
       "route": "group/[id]",
@@ -216,7 +217,7 @@ Before calling `proposeBlueprint`:
       "isTab": false,
       "reads": ["groups.get", "messages.list"],
       "writes": ["messages.send", "messages.react"],
-      "uiComponents": ["text", "button", "input", "card"]
+      "uiComponents": ["text", "button", "input", "card"],
     },
     {
       "route": "(home)/settings",
@@ -226,8 +227,8 @@ Before calling `proposeBlueprint`:
       "tabIcon": { "ios": "gear", "android": "settings" },
       "reads": ["auth.loggedInUser"],
       "writes": ["users.update"],
-      "uiComponents": ["text", "button", "input"]
-    }
+      "uiComponents": ["text", "button", "input"],
+    },
   ],
   "dataModel": [
     {
@@ -236,13 +237,21 @@ Before calling `proposeBlueprint`:
         { "name": "id", "type": "Id<\"users\">" },
         { "name": "email", "type": "string", "optional": true },
         { "name": "name", "type": "string", "optional": true },
-        { "name": "image", "type": "string | null", "optional": true }
+        { "name": "image", "type": "string | null", "optional": true },
       ],
       "indexes": [],
       "rlsPolicies": [
-        { "name": "users_read_all", "for": "select", "expression": "auth.uid() is not null" },
-        { "name": "users_update_self", "for": "update", "expression": "auth.uid() = id" }
-      ]
+        {
+          "name": "users_read_all",
+          "for": "select",
+          "expression": "auth.uid() is not null",
+        },
+        {
+          "name": "users_update_self",
+          "for": "update",
+          "expression": "auth.uid() = id",
+        },
+      ],
     },
     {
       "name": "groups",
@@ -250,13 +259,21 @@ Before calling `proposeBlueprint`:
         { "name": "id", "type": "Id<\"groups\">" },
         { "name": "name", "type": "string" },
         { "name": "created_by", "type": "Id<\"users\">" },
-        { "name": "created_at", "type": "string" }
+        { "name": "created_at", "type": "string" },
       ],
       "indexes": [],
       "rlsPolicies": [
-        { "name": "groups_read_members", "for": "select", "expression": "exists (select 1 from group_members where group_id = id and user_id = auth.uid())" },
-        { "name": "groups_insert_auth", "for": "insert", "expression": "auth.uid() = created_by" }
-      ]
+        {
+          "name": "groups_read_members",
+          "for": "select",
+          "expression": "exists (select 1 from group_members where group_id = id and user_id = auth.uid())",
+        },
+        {
+          "name": "groups_insert_auth",
+          "for": "insert",
+          "expression": "auth.uid() = created_by",
+        },
+      ],
     },
     {
       "name": "messages",
@@ -265,14 +282,22 @@ Before calling `proposeBlueprint`:
         { "name": "group_id", "type": "Id<\"groups\">" },
         { "name": "user_id", "type": "Id<\"users\">" },
         { "name": "body", "type": "string" },
-        { "name": "created_at", "type": "string" }
+        { "name": "created_at", "type": "string" },
       ],
       "indexes": [],
       "rlsPolicies": [
-        { "name": "messages_read_members", "for": "select", "expression": "exists (select 1 from group_members where group_id = messages.group_id and user_id = auth.uid())" },
-        { "name": "messages_insert_member", "for": "insert", "expression": "auth.uid() = user_id and exists (select 1 from group_members where group_id = messages.group_id and user_id = auth.uid())" }
-      ]
-    }
+        {
+          "name": "messages_read_members",
+          "for": "select",
+          "expression": "exists (select 1 from group_members where group_id = messages.group_id and user_id = auth.uid())",
+        },
+        {
+          "name": "messages_insert_member",
+          "for": "insert",
+          "expression": "auth.uid() = user_id and exists (select 1 from group_members where group_id = messages.group_id and user_id = auth.uid())",
+        },
+      ],
+    },
   ],
   "apiContracts": [
     {
@@ -281,7 +306,7 @@ Before calling `proposeBlueprint`:
       "description": "All groups the current user is a member of, with last-message preview.",
       "args": [],
       "returns": "{ id: string; name: string; lastMessage: string | null; lastAt: string | null }[]",
-      "authRequired": true
+      "authRequired": true,
     },
     {
       "name": "messages.send",
@@ -289,14 +314,14 @@ Before calling `proposeBlueprint`:
       "description": "Post a new message into a group.",
       "args": [
         { "name": "groupId", "type": "string" },
-        { "name": "body", "type": "string" }
+        { "name": "body", "type": "string" },
       ],
       "returns": "void",
-      "authRequired": true
-    }
+      "authRequired": true,
+    },
   ],
   "envVars": [],
-  "skillsNeeded": ["supabase-realtime"]
+  "skillsNeeded": ["supabase-realtime"],
 }
 ```
 
