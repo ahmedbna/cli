@@ -1,28 +1,15 @@
 // src/session/repl.ts
 //
-// The REPL is the user-facing chat loop. This version renders the chat
-// through Ink (React for the terminal), via src/ui/App.tsx, and drives
-// agent turns through src/session/agentTurn.ts.
+// Updated REPL. Two key changes from the original:
 //
-// High-level shape:
+//   1. The FIRST turn (initial build) is dispatched to the multi-agent
+//      orchestrator (Architect → Backend → Frontend), not runAgentTurn.
+//   2. FOLLOW-UP turns continue to use the single-agent loop in agentTurn.ts
+//      because they edit a small slice of an already-built app — the
+//      multi-agent split adds overhead without benefit there.
 //
-//   runRepl
-//     ├─ if non-TTY: runLegacyRepl()  ← readline fallback, unchanged UX
-//     └─ else:
-//         ├─ setUiActive(true)
-//         ├─ printHeader()
-//         ├─ render(<App ... />)
-//         ├─ if initialPrompt: drive first turn
-//         ├─ opts.afterFirstTurn?.()
-//         └─ while (true): await user input → drive turn / handle slash
-//
-// The App is passed imperative handlers:
-//   - onSubmit(text): resolves a pending "waitForInput" promise with the text
-//   - onInterrupt(): calls session.requestInterrupt()
-//   - onClarifyAnswer(answer): resolves a pending clarify promise
-//
-// That keeps the React side purely declarative — it emits user actions,
-// the REPL imperatively resolves them into agent turns.
+// The orchestrator persists the Blueprint to .bna/blueprint.json so
+// follow-up turns can read it as additional context.
 
 import chalk from 'chalk';
 import readline from 'readline';
@@ -31,6 +18,7 @@ import React from 'react';
 import { render, type Instance as InkInstance } from 'ink';
 import { log } from '../utils/logger.js';
 import { runAgentTurn } from './agentTurn.js';
+import { runInitialBuildPipeline } from './orchestrator.js';
 import { stopActiveSpinner } from '../utils/liveSpinner.js';
 import { runFinalization } from '../commands/build.js';
 import { getSkillMetadataForStack } from '../agent/skills.js';
@@ -38,7 +26,6 @@ import { checkCredits } from '../utils/credits.js';
 import type { Session } from './session.js';
 import type { TurnOutcome } from './planner.js';
 import { App } from '../ui/App.js';
-import { printHeader } from '../ui/Header.js';
 import { emit, setUiActive } from '../ui/events.js';
 import { randomUUID } from 'node:crypto';
 
@@ -54,8 +41,6 @@ export async function runRepl(
   opts: ReplOptions = {},
 ): Promise<void> {
   if (!process.stdout.isTTY) {
-    // Non-TTY (CI, pipes, `bna build -p '...' < /dev/null`) — use the
-    // legacy readline loop. Preserves the original behavior for scripts.
     return runLegacyRepl(session, opts);
   }
 
@@ -70,8 +55,6 @@ export async function runRepl(
     options?: string[];
   } | null = null;
 
-  // Rerender trigger: Ink's instance.rerender swaps the element tree, which
-  // is how we push updated props (agentRunning, pendingClarify) to <App />.
   let instance: InkInstance;
 
   const renderApp = () => {
@@ -97,7 +80,6 @@ export async function runRepl(
             const resolver = pendingClarifyResolver;
             pendingClarifyResolver = null;
             pendingClarify = null;
-            pendingClarifyResolver = null;
             resolver(answer);
             renderApp();
           }
@@ -118,13 +100,7 @@ export async function runRepl(
     renderApp();
   };
 
-  // ── Set up Ink ────────────────────────────────────────────────────────
-
   setUiActive(true);
-  // printHeader({
-  //   stack: session.stack,
-  //   cwd: session.projectRoot,
-  // });
 
   instance = render(
     React.createElement(App, {
@@ -154,11 +130,6 @@ export async function runRepl(
     });
 
   // ── SIGINT handling ───────────────────────────────────────────────────
-  //
-  // With Ink's exitOnCtrlC:false, we own SIGINT. Our contract:
-  //   - During agent turn: request interrupt.
-  //   - At prompt: first press warns, second within 2s exits cleanly.
-  // Escape is a second, softer interrupt path handled inside <App />.
 
   let lastCtrlCAt = 0;
   const handleSigint = () => {
@@ -186,19 +157,34 @@ export async function runRepl(
   };
   process.on('SIGINT', handleSigint);
 
-  // ── Drive the first turn if an initial prompt was given ───────────────
+  // ── Drive turn ────────────────────────────────────────────────────────
 
   const driveTurn = async (
     userText: string,
     isInitialBuild: boolean,
   ): Promise<void> => {
-    // Echo the user message into the log
-    emit({ type: 'user', text: userText, ts: Date.now() });
     setAgentRunning(true);
 
     let outcome: TurnOutcome;
     try {
-      outcome = await runAgentTurn(session, userText, { isInitialBuild });
+      if (isInitialBuild) {
+        // Multi-agent pipeline. The orchestrator emits its own user/divider
+        // events; we don't pre-emit the user message.
+        outcome = await runInitialBuildPipeline(session, userText, {
+          askUser: async (question, options) => {
+            setAgentRunning(false);
+            const ans = await waitForClarifyAnswer(question, options);
+            setAgentRunning(true);
+            return ans;
+          },
+        });
+      } else {
+        // Single-agent for follow-ups
+        emit({ type: 'user', text: userText, ts: Date.now() });
+        outcome = await runAgentTurn(session, userText, {
+          isInitialBuild: false,
+        });
+      }
     } catch (err: any) {
       emit({
         type: 'error',
@@ -210,17 +196,13 @@ export async function runRepl(
 
     emit({ type: 'thinking-stop' });
     setAgentRunning(false);
-
-    // Handle outcome (potentially recursive for clarify)
     await handleOutcome(outcome);
   };
 
   const handleOutcome = async (outcome: TurnOutcome): Promise<void> => {
     switch (outcome.kind) {
       case 'complete':
-        if (outcome.summary) {
-          emit({ type: 'success', text: outcome.summary });
-        }
+        if (outcome.summary) emit({ type: 'success', text: outcome.summary });
         break;
       case 'clarify': {
         const answer = await waitForClarifyAnswer(
@@ -231,7 +213,6 @@ export async function runRepl(
           emit({ type: 'info', text: '(no answer — paused)' });
           break;
         }
-        // Echo the answer and kick off a follow-up turn
         emit({ type: 'user', text: answer, ts: Date.now() });
         setAgentRunning(true);
         const next = await runAgentTurn(session, answer);
@@ -253,9 +234,8 @@ export async function runRepl(
     session.persist();
   };
 
-  // If no initial prompt was provided on the CLI, ask the user inline
-  // as the very first turn. This keeps the whole "what do you want to build"
-  // exchange inside the chat transcript.
+  // ── Initial prompt ────────────────────────────────────────────────────
+
   let firstPrompt = opts.initialPrompt;
 
   if (!firstPrompt) {
@@ -268,7 +248,9 @@ export async function runRepl(
     }
   }
 
-  await driveTurn(firstPrompt, true);
+  // First turn: multi-agent IF we don't already have a blueprint.
+  // (Resumed sessions already have one — go straight to follow-up flow.)
+  await driveTurn(firstPrompt, !session.hasBuilt());
 
   if (opts.afterFirstTurn) {
     try {
@@ -306,7 +288,7 @@ export async function runRepl(
   }
 }
 
-// ─── Slash commands ─────────────────────────────────────────────────────────
+// ─── Slash commands (unchanged) ─────────────────────────────────────────────
 
 async function handleSlashCommand(
   session: Session,
@@ -332,12 +314,18 @@ async function handleSlashCommand(
         type: 'info',
         text: `Project: ${session.projectRoot}  ·  Stack: ${session.stack}  ·  Turns: ${session.getTurnCount()}`,
       });
-      const ops = session.getRecentOperations(5);
-      for (const op of ops) {
+      const bp = session.getBlueprint();
+      if (bp) {
         emit({
           type: 'info',
-          text: `  #${op.id} ${op.kind} ${op.path}`,
+          text: chalk.dim(
+            `  Blueprint: ${bp.meta.appName} · ${bp.screens.length} screens · ${bp.dataModel.length} tables · ${bp.apiContracts.length} APIs`,
+          ),
         });
+      }
+      const ops = session.getRecentOperations(5);
+      for (const op of ops) {
+        emit({ type: 'info', text: `  #${op.id} ${op.kind} ${op.path}` });
       }
       return false;
     }
@@ -370,6 +358,31 @@ async function handleSlashCommand(
       return false;
     }
 
+    case 'blueprint': {
+      const bp = session.getBlueprint();
+      if (!bp) {
+        emit({
+          type: 'info',
+          text: '(no blueprint — initial build has not run)',
+        });
+        return false;
+      }
+      emit({ type: 'info', text: `App: ${bp.meta.appName}` });
+      emit({
+        type: 'info',
+        text: `Theme: ${bp.theme.palette} (${bp.theme.tone})`,
+      });
+      emit({
+        type: 'info',
+        text: `Screens: ${bp.screens.map((s) => s.name).join(', ')}`,
+      });
+      emit({
+        type: 'info',
+        text: `APIs: ${bp.apiContracts.map((a) => a.name).join(', ') || '(none)'}`,
+      });
+      return false;
+    }
+
     case 'modify': {
       if (!arg) {
         emit({
@@ -378,14 +391,11 @@ async function handleSlashCommand(
         });
         return false;
       }
-      // Delegate to the regular turn path by emitting as if the user typed it
       emit({
         type: 'user',
         text: `Modify the existing app: ${arg}`,
         ts: Date.now(),
       });
-      // No — we need to actually drive the turn. Simpler: return and let caller
-      // feed this through. For now, call runAgentTurn directly.
       const outcome = await runAgentTurn(
         session,
         `Modify the existing app: ${arg}`,
@@ -445,6 +455,7 @@ function emitHelp(): void {
   const rows: Array<[string, string]> = [
     ['/help', 'show this help'],
     ['/status', 'show session state + recent changes'],
+    ['/blueprint', "show the architect's plan"],
     ['/history', 'show last 20 file operations'],
     ['/undo', 'revert the most recent file operation'],
     ['/modify <desc>', 'ask the agent to modify the app'],
@@ -504,11 +515,7 @@ async function printCreditsInline(): Promise<void> {
   }
 }
 
-// ─── Legacy readline REPL (non-TTY fallback) ───────────────────────────────
-//
-// Preserves the original behavior when stdout isn't a TTY (CI, piped output,
-// `bna build -p '...' < /dev/null`). Kept intentionally minimal — we don't
-// need the fancy UI there because those environments can't render it.
+// ─── Legacy non-TTY REPL ────────────────────────────────────────────────────
 
 async function runLegacyRepl(
   session: Session,
@@ -540,9 +547,40 @@ async function runLegacyRepl(
 
   if (opts.initialPrompt) {
     agentRunning = true;
-    const outcome = await runAgentTurn(session, opts.initialPrompt, {
-      isInitialBuild: true,
-    });
+    let outcome: TurnOutcome;
+    if (!session.hasBuilt()) {
+      outcome = await runInitialBuildPipeline(session, opts.initialPrompt, {
+        askUser: async (question, options) => {
+          console.log();
+          console.log(chalk.bold.yellow('? ') + chalk.bold(question));
+          if (options && options.length > 0) {
+            const res = await inquirer.prompt([
+              {
+                type: 'list',
+                name: 'answer',
+                message: 'Choose:',
+                choices: [...options, 'Something else...'],
+              },
+            ]);
+            if (res.answer === 'Something else...') {
+              const c = await inquirer.prompt([
+                { type: 'input', name: 'answer', message: 'Your answer:' },
+              ]);
+              return c.answer;
+            }
+            return res.answer;
+          }
+          const r = await inquirer.prompt([
+            { type: 'input', name: 'answer', message: 'Your answer:' },
+          ]);
+          return r.answer;
+        },
+      });
+    } else {
+      outcome = await runAgentTurn(session, opts.initialPrompt, {
+        isInitialBuild: false,
+      });
+    }
     agentRunning = false;
     await legacyHandleOutcome(session, outcome);
     session.persist();

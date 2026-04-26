@@ -1,16 +1,16 @@
 // src/session/agentTurn.ts
 //
-// A single agent turn: model generates, tools execute, model continues
-// until it stops (end_turn) OR it calls `askUser` OR the user interrupts.
+// Single-agent turn loop. Used for FOLLOW-UP turns after the initial build
+// pipeline has run. The initial build itself is handled by the orchestrator
+// in src/session/orchestrator.ts.
 //
-// UI integration:
-//   - When `isUiActive()`, all visible output goes through the UI event bus
-//     (src/ui/events.ts) — no direct stdout writes, no spinner.
-//   - When not active (non-TTY / legacy path), we fall back to the original
-//     stdout streaming + liveSpinner "Thinking..." behavior.
-//
-// Every turn has its own spend cap (MAX_ROUNDS_PER_TURN) so a single
-// user request can't run away.
+// Why follow-ups stay single-agent:
+//   - They're typically small ("change the home screen background",
+//     "add a delete button"). Splitting these across 3 phases would add
+//     overhead without saving tokens.
+//   - The blueprint is already settled, so we don't need an Architect.
+//   - We DO inject the blueprint as additional context so the agent
+//     understands the design intent without re-deriving it.
 
 import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
@@ -28,6 +28,11 @@ import type { TurnOutcome } from './planner.js';
 import type { Session } from './session.js';
 import { generalSystemPrompt } from '../agent/prompts.js';
 import { emit, isUiActive } from '../ui/events.js';
+import {
+  formatScreensForAgent,
+  formatContractsForAgent,
+  formatTablesForAgent,
+} from '../agent/blueprint.js';
 
 const MAX_ROUNDS_PER_TURN = 30;
 const LONG_TURN_THRESHOLD = 20;
@@ -43,7 +48,7 @@ function stackLabel(stack: 'expo' | 'expo-convex' | 'expo-supabase'): string {
   }
 }
 
-// ─── SSE event types (unchanged) ───────────────────────────────────────────
+// ─── SSE event types ───────────────────────────────────────────────────────
 
 interface TextDelta {
   type: 'text_delta';
@@ -117,11 +122,26 @@ export async function runAgentTurn(
   const systemPrompt = generalSystemPrompt({ stack: session.stack });
 
   if (opts.isInitialBuild && turnNumber === 1) {
+    // This path is unused now (orchestrator handles initial builds), but
+    // we preserve it for the legacy CI fallback path which calls runAgentTurn
+    // directly.
     const bootstrap =
       `You are BNA, building a mobile app from the user's description:\n\n${userMessage}\n\n` +
       `The project root is: ${session.projectRoot}\n` +
       `Stack: ${stackLabel(session.stack)}\n\n`;
     session.context.setInitialMessage(bootstrap);
+  } else if (turnNumber === 1) {
+    // First follow-up turn after a resumed/orchestrator-built session.
+    // Inject the blueprint so the agent understands the existing design
+    // without having to read every backend/frontend file from scratch.
+    const blueprintContext = buildBlueprintContext(session);
+    session.context.setInitialMessage(
+      `You are BNA, continuing work on an already-built mobile app.\n` +
+        `The project root is: ${session.projectRoot}\n` +
+        `Stack: ${stackLabel(session.stack)}\n\n` +
+        blueprintContext +
+        `\n\nUser request:\n${userMessage}`,
+    );
   } else {
     session.context.addUserText(userMessage);
   }
@@ -231,7 +251,6 @@ export async function runAgentTurn(
 
     const { blocks, stopReason } = await readStream(response, round, session);
 
-    // ── Process the blocks ────────────────────────────────────────────
     const assistantContent: any[] = [];
     const toolResults: any[] = [];
     let askUserCall: { question: string; options?: string[] } | null = null;
@@ -243,7 +262,6 @@ export async function runAgentTurn(
         continue;
       }
 
-      // tool_use
       assistantContent.push({
         type: 'tool_use',
         id: block.id,
@@ -340,11 +358,9 @@ export async function runAgentTurn(
     }
 
     if (stopReason === 'max_tokens') {
-      if (isUiActive()) {
+      if (isUiActive())
         emit({ type: 'warn', text: 'Response truncated — continuing...' });
-      } else {
-        log.warn('Response truncated — continuing...');
-      }
+      else log.warn('Response truncated — continuing...');
       session.context.addUserText('Please continue where you left off.');
       continue;
     }
@@ -361,7 +377,52 @@ export async function runAgentTurn(
   };
 }
 
-// ─── HTTP helpers (unchanged) ──────────────────────────────────────────────
+// ─── Blueprint context for follow-up turns ────────────────────────────────
+
+function buildBlueprintContext(session: Session): string {
+  const bp = session.getBlueprint();
+  if (!bp) {
+    return '(no blueprint available — this is a legacy session or fresh resume)';
+  }
+
+  const sections: string[] = [];
+  sections.push("## Blueprint (the architect's plan for this app)");
+  sections.push(`App: ${bp.meta.appName}`);
+  sections.push(`Description: ${bp.meta.description}`);
+  sections.push(
+    `Theme: ${bp.theme.palette}` +
+      (bp.theme.accentHint ? ` (accent: ${bp.theme.accentHint})` : '') +
+      ` · tone: ${bp.theme.tone}`,
+  );
+  sections.push('');
+  sections.push('### Screens');
+  sections.push(formatScreensForAgent(bp.screens));
+  if (bp.dataModel.length > 0) {
+    sections.push('');
+    sections.push('### Data model');
+    sections.push(formatTablesForAgent(bp.dataModel));
+  }
+  if (bp.apiContracts.length > 0) {
+    sections.push('');
+    sections.push('### API contracts');
+    sections.push(formatContractsForAgent(bp.apiContracts));
+  }
+  if (bp.architectNotes) {
+    sections.push('');
+    sections.push('### Architect notes');
+    sections.push(bp.architectNotes);
+  }
+  sections.push('');
+  sections.push(
+    'When making changes, respect the existing architecture. ' +
+      'If the user asks for a feature that requires a new API or table, ' +
+      'add it incrementally — do NOT redesign the app.',
+  );
+
+  return sections.join('\n');
+}
+
+// ─── HTTP helpers ──────────────────────────────────────────────────────────
 
 async function fetchStream(
   siteUrl: string,
@@ -431,18 +492,13 @@ async function extractErrorMessage(response: Response): Promise<string> {
   const status = response.status;
   const statusText = response.statusText || '';
 
-  if (status === 502) {
+  if (status === 502)
     return 'Server unavailable (502). The Convex backend is temporarily unreachable.';
-  }
-  if (status === 503) {
+  if (status === 503)
     return 'Service temporarily unavailable (503). Please try again.';
-  }
-  if (status === 504) {
-    return 'Upstream timeout (504). Please try again.';
-  }
-  if (status === 429) {
+  if (status === 504) return 'Upstream timeout (504). Please try again.';
+  if (status === 429)
     return 'Rate limited (429). Please wait a few seconds and try again.';
-  }
 
   const ct = response.headers.get('content-type') ?? '';
   try {
@@ -485,9 +541,6 @@ async function readStream(
   let textStarted = false;
   let assistantId: string | null = null;
 
-  // Thinking indicator:
-  //   - UI mode: emit 'thinking-start' (component owns the animation)
-  //   - Legacy: fall back to the blocking liveSpinner
   const uiMode = isUiActive();
   let spinner: ReturnType<typeof startSpinner> | null = null;
 
@@ -508,7 +561,6 @@ async function readStream(
     else spinner?.stop();
   };
 
-  // Ensure we cleanly finalize any streaming assistant message
   const endAssistant = () => {
     if (uiMode && assistantId) {
       emit({ type: 'assistant-end', id: assistantId });
@@ -584,7 +636,6 @@ async function readStream(
             onText: (text) => {
               if (!text) return;
               if (!textStarted) {
-                // Stop the thinking indicator at the first byte of text
                 stopThinking();
                 textStarted = true;
                 if (uiMode) {
@@ -611,8 +662,6 @@ async function readStream(
               } else if (!uiMode) {
                 process.stdout.write('\n');
               }
-              // If we had been streaming assistant text, seal it off here —
-              // the tool run interrupts the text.
               endAssistant();
             },
             onStopReason: (reason) => {
@@ -632,15 +681,9 @@ async function readStream(
       /* noop */
     }
     endAssistant();
-    if (!textStarted) {
-      stopThinking();
-    } else if (!uiMode) {
-      process.stdout.write('\n');
-    } else {
-      // In UI mode the thinking indicator may still be up if only tools ran.
-      // Stop it on the reader's exit; agentTurn will restart it for round 2.
-      stopThinking();
-    }
+    if (!textStarted) stopThinking();
+    else if (!uiMode) process.stdout.write('\n');
+    else stopThinking();
   }
 
   return { blocks, stopReason };
@@ -718,7 +761,8 @@ function processEvent(
       break;
     }
     case 'error': {
-      if (isUiActive()) emit({ type: 'error', text: `Stream: ${event.error.message}` });
+      if (isUiActive())
+        emit({ type: 'error', text: `Stream: ${event.error.message}` });
       else log.error(`Stream error: ${event.error.message}`);
       break;
     }
