@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 const dbUrl = process.env.SUPABASE_DB_URL;
 if (!dbUrl) {
   console.error(
-    '❌ SUPABASE_DB_URL not set. Add it to .env.local (see .env.example).',
+    'SUPABASE_DB_URL not set. Add it to .env.local (see .env.example).',
   );
   process.exit(1);
 }
@@ -40,7 +40,7 @@ try {
   ).trim();
 
   if (out) {
-    console.error('❌ Tables without RLS enabled:');
+    console.error('Tables without RLS enabled:');
     out.split('\n').forEach((t) => console.error(`   - public.${t}`));
     console.error(
       '\nEnable RLS on every public table before pushing. Add:\n' +
@@ -52,6 +52,6 @@ try {
 
   console.log('✅ All public tables have RLS enabled.');
 } catch (err) {
-  console.error('❌ RLS check failed:', err.message);
+  console.error('RLS check failed:', err.message);
   process.exit(1);
 }

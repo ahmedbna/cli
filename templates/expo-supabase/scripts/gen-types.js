@@ -17,7 +17,7 @@ try {
   execSync('supabase status', { stdio: 'ignore' });
 } catch {
   console.error(
-    '❌ Supabase isn\'t running locally. Start it first:\n   npm run db:start',
+    "Supabase isn't running locally. Start it first:\n   npm run db:start",
   );
   process.exit(1);
 }

@@ -66,7 +66,7 @@ Use `CONVEX_SITE_URL` when registering webhook callbacks with third parties (Str
 
 ## Hard rules — these break in subtle ways
 
-### ❌ Don't condition function exports on env vars
+### Don't condition function exports on env vars
 
 ```ts
 // BROKEN — set of exported functions is fixed at deploy time
@@ -90,11 +90,11 @@ export const myFunc = mutation({
 });
 ```
 
-### ❌ Don't use env vars in cron schedule definitions
+### Don't use env vars in cron schedule definitions
 
 Cron schedules are also fixed at deploy. Reading `process.env` to _decide_ a cron interval won't be re-evaluated when the env var changes.
 
-### ❌ Don't bake env vars into module-level constants
+### Don't bake env vars into module-level constants
 
 ```ts
 // Risky — captures undefined at import time if the var isn't set yet

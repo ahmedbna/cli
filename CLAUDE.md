@@ -149,6 +149,7 @@ The terminal UI is built with [Ink](https://github.com/vadimdemedes/ink) (React 
 
 - `events.ts` — `uiBus` EventEmitter + `UiEvent` union type. Agent/tool code calls `emit(event)`; Ink components subscribe via `on(fn)`. `setUiActive(true)` gates all emissions.
 - `App.tsx` — Root Ink component. **Static/Live split**: finalized items go into `<Static>` (rendered once, scrollback-safe); in-flight tool calls and streaming assistant text live in a re-rendering "live region" below. State is managed by a single `reducer(state, UiEvent)`.
+- `Header.tsx` — Static brand header rendered once at startup.
 - `toolAdapter.ts` — `createToolUi(kind, label)` returns a `ToolUi` interface whose methods (`progress`, `update`, `succeed`, `fail`) dispatch to either the event bus or the legacy Ora spinner. Tool executors must always go through this, never call `emit()` / `startSpinner()` directly.
 - `theme.ts` — Brand color palette (`accent: '#FAD40B'` BNA yellow) and the thinking spinner verb rotation.
 - `components/` — `Lines.tsx`, `ToolLine.tsx`, `Thinking.tsx` (round + token counter), `Input.tsx`, `SlashPalette.tsx`, `ClarifyPicker.tsx`.
@@ -163,6 +164,7 @@ The terminal UI is built with [Ink](https://github.com/vadimdemedes/ink) (React 
 | `credits.ts`        | Credit balance helpers used by `bna credits` and pre-turn gating                                                                                                                                      |
 | `installManager.ts` | Background npm orchestration with streaming output                                                                                                                                                    |
 | `tsCheck.ts`        | TypeScript validation + autofix after generation                                                                                                                                                      |
+| `runProcess.ts`     | `runInteractive` (inherits stdio for interactive prompts) and `runCaptured` (captures stdout/stderr) — used by orchestrator backend setup and finalization pipeline                                    |
 | `gitInit.ts`        | Git repo initialization post-build                                                                                                                                                                    |
 | `logger.ts`         | Chalk-based pretty terminal output                                                                                                                                                                    |
 | `liveSpinner.ts`    | Ora-based reusable spinners                                                                                                                                                                           |
@@ -187,6 +189,6 @@ Each skill folder is auto-discovered; adding a new one makes it available to all
 
 ## Build Config
 
-`build.js` uses esbuild: ESM format, bundles all deps, targets Node, outputs `dist/index.js`. The binary shebang and `chmod +x` are handled in the build script.
+`build.js` uses esbuild: ESM format, targets Node 18, outputs `dist/index.js`. The binary shebang is injected as a banner. **`packages: 'external'`** — all `node_modules` dependencies are left external (not bundled), so `node_modules/` must be present alongside the built binary at runtime.
 
 `tsconfig.json`: ES2022 target, strict mode, `NodeNext` module resolution.

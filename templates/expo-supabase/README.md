@@ -128,7 +128,7 @@ These are the constraints that keep the code-first philosophy intact as the app 
 UI code imports from `@/supabase/api` — never the raw client. This is the single most important rule. It means refactoring (e.g., swapping to a new backend, adding caching, instrumenting calls) happens in one place.
 
 ```ts
-// ❌ Bad
+// Bad
 import { supabase } from '@/supabase/client';
 const { data } = await supabase.from('users').select('*');
 
@@ -155,19 +155,20 @@ Screens use `try/catch` or TanStack Query's `error` state. This matches the Conv
 
 ## Daily Workflow
 
-| What you want to do | Command |
-|---|---|
-| Start local stack | `npm run db:start` |
-| Apply migrations + seed from scratch | `npm run db:reset` |
-| Prototype a schema change in Studio, then capture it | `npm run db:diff my_change_name` |
-| Regenerate TypeScript types after schema change | `npm run db:types` |
-| Push migrations to remote (staging/prod) | `npm run db:push:safe` |
-| Run the app | `npm run ios` or `npm run android` |
-| Stop local stack | `npm run db:stop` |
+| What you want to do                                  | Command                            |
+| ---------------------------------------------------- | ---------------------------------- |
+| Start local stack                                    | `npm run db:start`                 |
+| Apply migrations + seed from scratch                 | `npm run db:reset`                 |
+| Prototype a schema change in Studio, then capture it | `npm run db:diff my_change_name`   |
+| Regenerate TypeScript types after schema change      | `npm run db:types`                 |
+| Push migrations to remote (staging/prod)             | `npm run db:push:safe`             |
+| Run the app                                          | `npm run ios` or `npm run android` |
+| Stop local stack                                     | `npm run db:stop`                  |
 
 ## Adding a New Feature — e.g., a `posts` table
 
 1. **Create the migration:**
+
    ```sql
    -- supabase/migrations/0005_posts_table.sql
    create table public.posts (
@@ -190,12 +191,14 @@ Screens use `try/catch` or TanStack Query's `error` state. This matches the Conv
    ```
 
 2. **Apply and regenerate types:**
+
    ```bash
    npm run db:reset
    npm run db:types
    ```
 
 3. **Add the api module** — `supabase/api/posts.ts`:
+
    ```ts
    import { supabase } from '@/supabase/client';
    import { requireUserId, ApiError } from './_helpers';
@@ -203,27 +206,34 @@ Screens use `try/catch` or TanStack Query's `error` state. This matches the Conv
    export const posts = {
      async list() {
        const { data, error } = await supabase
-         .from('posts').select('*').order('created_at', { ascending: false });
+         .from('posts')
+         .select('*')
+         .order('created_at', { ascending: false });
        if (error) throw new ApiError(error.message, error.code, error);
        return data ?? [];
      },
      async create(content: string) {
        const authorId = await requireUserId();
        const { error } = await supabase
-         .from('posts').insert({ author_id: authorId, content });
+         .from('posts')
+         .insert({ author_id: authorId, content });
        if (error) throw new ApiError(error.message, error.code, error);
      },
    };
    ```
 
 4. **Expose it in `supabase/api/index.ts`:**
+
    ```ts
    export const api = { users, auth, posts };
    ```
 
 5. **Use it in a screen:**
    ```tsx
-   const { data: posts } = useQuery({ queryKey: ['posts'], queryFn: api.posts.list });
+   const { data: posts } = useQuery({
+     queryKey: ['posts'],
+     queryFn: api.posts.list,
+   });
    const createPost = useMutation({
      mutationFn: api.posts.create,
      onSuccess: () => queryClient.invalidateQueries({ queryKey: ['posts'] }),
@@ -235,11 +245,13 @@ Screens use `try/catch` or TanStack Query's `error` state. This matches the Conv
 1. **Create a hosted Supabase project** at supabase.com (you need the hosted project only for its URL and keys — the schema still comes from your migrations).
 
 2. **Link the project:**
+
    ```bash
    supabase link --project-ref <your-project-ref>
    ```
 
 3. **Push migrations:**
+
    ```bash
    npm run db:push:safe
    ```

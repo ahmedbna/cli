@@ -225,7 +225,7 @@ The backend is Postgres + GoTrue + Realtime + Storage, all driven by SQL migrati
 UI imports from `@/supabase/api`. The raw client is wrapped exactly once. This is the single most important rule — refactoring (caching, swapping backends, instrumentation) lives in one place.
 
 ```ts
-// ❌ Bad
+// Bad
 import { supabase } from '@/supabase/client';
 const { data } = await supabase.from('posts').select('*');
 
