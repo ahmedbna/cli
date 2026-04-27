@@ -26,6 +26,11 @@ import { checkCredits } from '../utils/credits.js';
 import { InstallManager } from '../utils/installManager.js';
 import { getPendingEnvVars, clearPendingEnvVars } from '../agent/tools.js';
 import { startSpinner, stopActiveSpinner } from '../utils/liveSpinner.js';
+import {
+  runInteractive,
+  runStreamed,
+  waitForInstall,
+} from '../utils/runProcess.js';
 import { typeCheckAndFix } from '../utils/tsCheck.js';
 import { initGitRepo } from '../utils/gitInit.js';
 import { Session } from '../session/session.js';
@@ -89,80 +94,6 @@ function resolveTemplateDir(stack: string): string {
 
 function isMacOS(): boolean {
   return os.platform() === 'darwin';
-}
-
-function runInteractive(command: string, cwd: string): Promise<boolean> {
-  stopActiveSpinner();
-  return new Promise((resolve) => {
-    const proc = spawn(command, {
-      cwd,
-      stdio: 'inherit',
-      shell: true,
-      env: { ...process.env, FORCE_COLOR: '1' },
-    });
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
-  });
-}
-
-async function runStreamed(
-  command: string,
-  cwd: string,
-  label: string,
-  timeoutMs = 600_000,
-): Promise<{ ok: boolean; output: string }> {
-  const spinner = startSpinner(chalk.magenta(label));
-  return new Promise((resolve) => {
-    const proc = spawn(command, {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      env: { ...process.env, FORCE_COLOR: '0', CI: '1' },
-    });
-    let captured = '';
-    let buf = '';
-    const handle = (chunk: Buffer) => {
-      const text = chunk.toString();
-      captured += text;
-      if (captured.length > 32_000) captured = captured.slice(-16_000);
-      buf += text;
-      const parts = buf.split('\n');
-      buf = parts.pop() ?? '';
-      for (const raw of parts) {
-        const line = raw.trimEnd();
-        if (line) spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(line));
-      }
-    };
-    proc.stdout?.on('data', handle);
-    proc.stderr?.on('data', handle);
-
-    const timer = setTimeout(() => {
-      spinner.writeAbove(chalk.red('    │ (timeout — killing process)'));
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        /* noop */
-      }
-    }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      if (buf.trim())
-        spinner.writeAbove(chalk.dim('    │ ') + chalk.dim(buf.trim()));
-      if (code === 0) {
-        spinner.succeed(chalk.green(label + ' ✓'));
-        resolve({ ok: true, output: captured.trim() });
-      } else {
-        spinner.fail(chalk.red(label + ` (exit ${code})`));
-        resolve({ ok: false, output: captured.trim() });
-      }
-    });
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      spinner.fail(chalk.red(label + ` (${err.message})`));
-      resolve({ ok: false, output: err.message });
-    });
-  });
 }
 
 // ─── Session detection ──────────────────────────────────────────────────────
@@ -638,28 +569,6 @@ async function startFreshSessionInExistingProject(
   await runRepl(session, { initialPrompt: promptAnswer.prompt });
 }
 
-// ─── Wait for background install (with visible spinner) ─────────────────────
-
-async function waitForInstall(installManager: InstallManager): Promise<void> {
-  const status = installManager.getStatus();
-  if (status === 'ready') return;
-  if (status === 'failed') {
-    log.warn('Background npm install failed — continuing without it.');
-    return;
-  }
-
-  const spinner = startSpinner(
-    chalk.cyan('Ensuring background dependencies have finished installing'),
-  );
-  const result = await installManager.awaitBaseInstall();
-  if (result.ok) {
-    const seconds = Math.round(result.durationMs / 1000);
-    spinner.succeed(chalk.green(`Dependencies installed (${seconds}s)`));
-  } else {
-    spinner.fail(chalk.red('npm install failed'));
-  }
-}
-
 // ─── Finalization pipeline (unchanged logic, lifted into a function) ───────
 
 interface FinalizeOptions {
@@ -674,13 +583,25 @@ export async function runFinalization(opts: FinalizeOptions): Promise<void> {
   const { session, stack, installManager, authToken, skipRun } = opts;
   const projectRoot = session.projectRoot;
 
+  // The orchestrator's between-phases backend setup may have already run
+  // Convex init / auth / env-var collection / `npx convex dev` (background).
+  // When that ran successfully, we skip those steps here to avoid asking
+  // the user the same questions twice.
+  const skipBackendSetup = session.isBackendDeployed();
+
   console.log();
   log.divider();
   log.info(chalk.bold('Finalizing your app'));
   log.divider();
 
   // ── Step 1: Convex init ────────────────────────────────────────────────
-  if (stack === 'expo-convex') {
+  if (skipBackendSetup) {
+    log.info(
+      chalk.dim(
+        'Step 1/5 — Backend already deployed during build (skipping init).',
+      ),
+    );
+  } else if (stack === 'expo-convex') {
     console.log();
     log.info(chalk.bold.cyan('Step 1/5 — Initialize Convex project'));
     log.info(
@@ -760,7 +681,13 @@ export async function runFinalization(opts: FinalizeOptions): Promise<void> {
   }
 
   // ── Step 4: Convex Auth setup + env vars + final deploy ────────────────
-  if (stack === 'expo-convex') {
+  if (skipBackendSetup) {
+    log.info(
+      chalk.dim(
+        'Step 4/5 — Auth + env vars already configured during build.',
+      ),
+    );
+  } else if (stack === 'expo-convex') {
     console.log();
     log.info(chalk.bold.cyan('Step 4/5 — Configure Convex Auth'));
     log.info(
@@ -899,7 +826,9 @@ export async function runFinalization(opts: FinalizeOptions): Promise<void> {
     return;
   }
 
-  if (stack === 'expo-convex') {
+  if (stack === 'expo-convex' && !skipBackendSetup) {
+    // When the orchestrator already ran the backend setup, `npx convex dev`
+    // is already running in the background — don't start a second one.
     const bgSpinner = startSpinner(
       chalk.cyan('Starting Convex dev server in background'),
     );

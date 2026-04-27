@@ -28,6 +28,8 @@ import type { Blueprint } from '../agent/blueprint.js';
 import type { Session } from './session.js';
 import { emit, isUiActive } from '../ui/events.js';
 import { log } from '../utils/logger.js';
+import { waitForInstall } from '../utils/runProcess.js';
+import { runBackendSetup } from './backendSetup.js';
 import type { TurnOutcome } from './planner.js';
 
 export interface OrchestratorOptions {
@@ -71,7 +73,16 @@ export async function runInitialBuildPipeline(
   // Print a compact summary of what the architect decided
   printBlueprintSummary(blueprint);
 
+  // ── Wait for the background npm install to finish ─────────────────────
+  // The architect runs in parallel with `npm install`. The backend phase
+  // needs node_modules in place because it may run commands like `npx
+  // convex dev --once` and `npx @convex-dev/auth` immediately after.
+  await waitForInstall(session.installManager);
+
   // ── Phase 2: Backend Builder (skip for Expo-only) ─────────────────────
+  let backendDeployed = false;
+  let envVarsSetDuringSetup: string[] = [];
+
   if (session.stack !== 'expo') {
     const backendResult = await runBackendAgent({
       blueprint,
@@ -96,6 +107,23 @@ export async function runInitialBuildPipeline(
     // Record file ops in the session journal so /undo and /history work
     for (const filePath of backendResult.filesWritten) {
       session.recordOperation('update', filePath);
+    }
+
+    // ── Deploy the backend before the frontend phase runs ───────────────
+    // This initialises the project (Convex / Supabase), configures auth,
+    // collects any required env vars from the user, deploys, and starts
+    // the dev server in the background. The frontend agent therefore
+    // works against a real, live backend.
+    const setupResult = await runBackendSetup({
+      session,
+      stack: session.stack,
+      blueprint,
+    });
+    backendDeployed = setupResult.deployed;
+    envVarsSetDuringSetup = setupResult.envVarsSet;
+    session.setBackendDeployed(backendDeployed);
+    if (envVarsSetDuringSetup.length > 0) {
+      session.setEnvVarsConfiguredDuringBuild(envVarsSetDuringSetup);
     }
   } else {
     if (isUiActive()) {

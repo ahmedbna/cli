@@ -53,6 +53,11 @@ export class Session {
   /** Architect's blueprint — set after the initial build pipeline runs. */
   private blueprint: Blueprint | null = null;
 
+  /** True once the orchestrator has run `convex dev --once` (or supabase
+   *  start) successfully, meaning the finalization step does not need to
+   *  re-deploy the backend or re-configure auth. */
+  private backendDeployed = false;
+
   constructor(opts: {
     projectRoot: string;
     stack: 'expo' | 'expo-convex' | 'expo-supabase';
@@ -226,6 +231,22 @@ export class Session {
 
   getConfirmedEnvVars(): string[] {
     return Array.from(this.confirmedEnvVars);
+  }
+
+  /** Bulk-mark env vars that the orchestrator's backend setup step
+   *  collected from the user, so finalization does not re-prompt. */
+  setEnvVarsConfiguredDuringBuild(names: string[]): void {
+    for (const n of names) this.confirmedEnvVars.add(n);
+  }
+
+  // ── Backend deploy state ───────────────────────────────────────────────
+
+  setBackendDeployed(deployed: boolean): void {
+    this.backendDeployed = deployed;
+  }
+
+  isBackendDeployed(): boolean {
+    return this.backendDeployed;
   }
 
   // ── Persistence ────────────────────────────────────────────────────────

@@ -61,9 +61,16 @@ The initial build runs as three isolated phases via `src/session/orchestrator.ts
 User prompt → orchestrator.runInitialBuildPipeline
   ├── Phase 1: architectAgent    (1-8 rounds, no FS access, calls proposeBlueprint)
   │   └── Blueprint persisted to .bna/blueprint.json
+  ├── Wait for background `npm install` to finish (started in build.ts)
   ├── Phase 2: backendAgent      (5-15 rounds, writes convex/* or supabase/*)
   │   └── Reports finalContracts via finishBackend — may amend architect's signatures
   │   └── Blueprint updated with amended contracts in .bna/blueprint.json
+  ├── Backend setup (session/backendSetup.ts):
+  │     · Convex: `npx convex dev --once` → `npx @convex-dev/auth` → prompt for
+  │       env vars → `npx convex env set …` → redeploy → `npx convex dev` (bg)
+  │     · Supabase: prompt user for Project URL + anon key + any queued env
+  │       vars → write all values to .env.local (no Docker required)
+  │   └── session.setBackendDeployed(true) so /finalize skips these steps later
   └── Phase 3: frontendAgent     (10-25 rounds, writes theme/components/screens)
       └── Receives FINAL contracts from Phase 2, calls finish()
 ```
