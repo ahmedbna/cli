@@ -11,13 +11,42 @@ import { configCommand } from './commands/config.js';
 
 const program = new Command();
 
-program
-  .name('bna')
-  .description(
-    chalk.yellow.bold('BNA') +
-      ' — CLI AI agent that builds full-stack apps directly from your terminal',
-  )
-  .version('1.0.0');
+// Build flags shared between the default action (`bna`) and `bna init`.
+const buildOptions = (cmd: Command) =>
+  cmd
+    .option('-p, --prompt <prompt>', 'App description prompt')
+    .option('-n, --name <name>', 'Project name')
+    .option('-f, --frontend <frontend>', 'Frontend: expo')
+    .option('-b, --backend <backend>', 'Backend: convex')
+    .option(
+      '--skills <skills>',
+      'Anthropic Agent Skills to use (comma-separated: pptx,xlsx,docx,pdf or custom skill IDs)',
+    )
+    .option('--no-install', 'Skip npm install after generation')
+    .option('--no-run', 'Skip running the dev server after generation');
+
+// ─── bna (default) ──────────────────────────────────────────────────────────
+// Running `bna` with no subcommand drops into the conversational REPL:
+//   - If the cwd has a saved session/blueprint under `.bna/`, resume it.
+//   - Otherwise, walk the user through stack selection and scaffold a new app.
+buildOptions(
+  program
+    .name('bna')
+    .description(
+      chalk.yellow.bold('BNA') +
+        ' — CLI AI agent that builds full-stack apps directly from your terminal',
+    )
+    .version('1.0.0'),
+).action(generateCommand);
+
+// ─── bna init ───────────────────────────────────────────────────────────────
+// Explicit alias of the default action — handy when the bare `bna` invocation
+// is shadowed by another binary or when intent should be obvious in scripts.
+buildOptions(
+  program
+    .command('init')
+    .description('Start a new project (or resume an existing session in this directory)'),
+).action(generateCommand);
 
 // ─── bna login ──────────────────────────────────────────────────────────────
 program
@@ -31,23 +60,6 @@ program
   .description('Clear saved authentication')
   .action(logoutCommand);
 
-// ─── bna build (default command) ─────────────────────────────────────────
-program
-  .command('build')
-  .alias('b')
-  .description('Build a full-stack mobile application')
-  .option('-p, --prompt <prompt>', 'App description prompt')
-  .option('-n, --name <name>', 'Project name')
-  .option('-f, --frontend <frontend>', 'Frontend: expo')
-  .option('-b, --backend <backend>', 'Backend: convex')
-  .option(
-    '--skills <skills>',
-    'Anthropic Agent Skills to use (comma-separated: pptx,xlsx,docx,pdf or custom skill IDs)',
-  )
-  .option('--no-install', 'Skip npm install after generation')
-  .option('--no-run', 'Skip running the dev server after generation')
-  .action(generateCommand);
-
 // ─── bna credits ────────────────────────────────────────────────────────────
 program
   .command('credits')
@@ -60,10 +72,5 @@ program
   .description('View CLI configuration')
   .option('--show', 'Show current configuration')
   .action(configCommand);
-
-// Default: if no command is given, run build
-program.action(() => {
-  configCommand();
-});
 
 program.parse();

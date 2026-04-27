@@ -1,6 +1,6 @@
 {
   "name": "bna",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "CLI AI agent that builds full-stack apps directly from your terminal",
   "type": "module",
   "bin": {

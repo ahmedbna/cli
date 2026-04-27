@@ -6,13 +6,13 @@ An AI-powered CLI that generates production-ready full-stack mobile apps from a 
 
 ## How It Works
 
-1. Run `bna build` and describe your app in plain English.
+1. Run `bna` (or `bna init`) and describe your app in plain English.
 2. BNA copies a starter template (Expo + your chosen backend) into a new directory.
 3. `npm install` starts in the background while the three-phase AI pipeline immediately begins.
 4. **Phase 1 — Architect**: plans the app architecture (screens, data model, API contracts, theme) and produces a structured Blueprint. No code is written yet.
 5. **Phase 2 — Backend Builder**: implements the backend (Convex schema + functions, or Supabase migrations + API) using the Blueprint as its spec. Skipped for Expo-only stacks.
 6. **Phase 3 — Frontend Builder**: implements the theme, UI components, tab layout, and every screen using the finalized API contracts from Phase 2.
-7. When the pipeline finishes, the CLI runs a finalization pipeline: initializes the backend, type-checks, commits a git snapshot, configures auth, and launches the app in a simulator.
+7. When the pipeline finishes, the CLI offers to run a finalization pipeline: initializes the backend, type-checks, commits a git snapshot, configures auth, and launches the app in a simulator.
 8. The session and Blueprint are saved to `.bna/` so you can keep iterating in later runs — follow-up turns use a single-agent loop with the Blueprint injected as context.
 
 ---
@@ -57,7 +57,7 @@ bna credits   # check remaining credit balance
 ### Interactive (recommended)
 
 ```bash
-bna build
+bna
 ```
 
 BNA prompts you to choose a frontend, backend, project name, and app description.
@@ -65,26 +65,28 @@ BNA prompts you to choose a frontend, backend, project name, and app description
 ### With flags
 
 ```bash
-bna build \
+bna init \
   --name my-app \
   --frontend expo \
   --backend convex \
   --prompt "A habit tracker with streaks, reminders, and a leaderboard"
 ```
 
-| Flag                  | Description                                             |
-| --------------------- | ------------------------------------------------------- |
-| `-n, --name <name>`   | Project directory name                                  |
-| `-p, --prompt <text>` | Natural language app description                        |
-| `-f, --frontend <fe>` | `expo`                                                  |
-| `-b, --backend <be>`  | `convex`, `supabase`, or omit for no backend            |
-| `--skills <list>`     | Comma-separated extra skills to load (e.g. `pptx,xlsx`) |
-| `--no-install`        | Skip background `npm install`                           |
-| `--no-run`            | Skip launching the simulator after finalization         |
+`bna` and `bna init` are identical — use whichever reads more naturally in your workflow.
+
+| Flag                  | Description                                                         |
+| --------------------- | ------------------------------------------------------------------- |
+| `-n, --name <name>`   | Project directory name                                              |
+| `-p, --prompt <text>` | Natural language app description                                    |
+| `-f, --frontend <fe>` | `expo`                                                              |
+| `-b, --backend <be>`  | `convex`, `supabase`, or omit for no backend                        |
+| `--skills <list>`     | Comma-separated Agent Skills (e.g. `pptx,xlsx,docx,pdf`)           |
+| `--no-install`        | Skip background `npm install`                                       |
+| `--no-run`            | Skip launching the simulator after finalization (other steps still run) |
 
 ### Resuming a session
 
-Run `bna build` inside (or `--name` pointing to) an existing project directory. BNA detects the saved `.bna/session.json` and continues the conversation where you left off.
+Run `bna` inside (or `bna init --name <dir>` pointing to) an existing project directory. BNA detects `.bna/session.json` or `.bna/blueprint.json` and continues the conversation where you left off.
 
 ---
 
@@ -104,13 +106,13 @@ All three templates share the same Expo Router layout, component structure, and 
 
 After the first agent turn, BNA offers to run finalization. It can also be triggered anytime with `/finalize` in the REPL.
 
-| Step                | What runs                                                                                                             |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| 1. Backend init     | `npx convex dev --once` (Convex) · `npm run db:reset && npm run db:types` (Supabase)                                  |
-| 2. TypeScript check | `tsc --noEmit` — if errors are found, a headless agent loop auto-fixes them                                           |
-| 3. Git snapshot     | `git init && git add . && git commit`                                                                                 |
-| 4. Auth + env vars  | `npx @convex-dev/auth` (Convex) · Supabase key prompts · any queued `addEnvironmentVariables` collected interactively |
-| 5. Launch           | `npx expo run:ios` or `npx expo run:android` (skipped with `--no-run`)                                                |
+| Step                | What runs                                                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 1. Backend init     | `npx convex dev --once` (Convex) · `npm run db:reset && npm run db:types` (Supabase)                                   |
+| 2. TypeScript check | `tsc --noEmit` — if errors are found, a headless agent loop auto-fixes them                                            |
+| 3. Git snapshot     | `git init && git add . && git commit`                                                                                  |
+| 4. Auth + env vars  | `npx @convex-dev/auth` (Convex) · Supabase key prompts · any queued `addEnvironmentVariables` collected interactively  |
+| 5. Launch           | `npx expo run:ios` or `npx expo run:android` (skipped with `--no-run`)                                                 |
 
 ---
 
@@ -198,7 +200,7 @@ The agent has 12 tools available during code generation:
 
 ```text
 src/
-├── index.ts                 # Commander.js CLI entry; routes bna login/build/credits/config
+├── index.ts                 # Commander.js CLI entry; routes bna / bna init / login / credits / config
 ├── commands/
 │   ├── build.ts             # Context detection, template copy, parallel install, finalization
 │   ├── stacks.ts            # SUPPORTED_STACKS registry, combineStack helper
@@ -231,6 +233,7 @@ src/
 │   ├── Header.tsx
 │   └── components/          # Lines, ToolLine, Thinking, Input, SlashPalette, ClarifyPicker
 └── utils/
+    ├── apiClient.ts         # Shared HTTP client: fetchStream, fetchStreamWithRetry (502/503/504 backoff), extractErrorMessage
     ├── auth.ts              # OAuth token storage + silent refresh
     ├── store.ts             # Conf-based config at ~/.config/bna-cli/
     ├── credits.ts           # Balance check, pre-turn gating
@@ -239,8 +242,7 @@ src/
     ├── gitInit.ts           # Post-build git init + initial commit
     ├── logger.ts            # Chalk pretty-print helpers
     ├── liveSpinner.ts       # Ora reusable spinners (legacy path)
-    ├── shell.ts             # ANSI stripping for tool output
-    └── stripIndent.ts       # Template-literal indent helper
+    └── shell.ts             # ANSI stripping for tool output
 
 prompts/
 ├── architect/
@@ -277,6 +279,8 @@ templates/
 
 **Follow-up turns stay single-agent** — After the initial build, `/modify`, free-form chat, and `/continue` use a single-agent loop (`agentTurn.ts`) with the Blueprint injected as context. The multi-agent split adds overhead without benefit for small incremental changes.
 
+**Shared HTTP client** — All four agents (`architectAgent`, `backendAgent`, `frontendAgent`, `agentTurn`) share `src/utils/apiClient.ts` for all `/cli/chat` requests. It handles retries with exponential backoff on 502/503/504, and strips raw HTML from proxy error pages into readable messages.
+
 **Parallel install** — `npm install` starts the moment the template is copied, before any code is written. `runCommand` calls for `npx expo install` auto-serialize behind it via `InstallManager` — the agent never has to wait or check.
 
 **Phase-isolated system prompts** — Each phase has its own prompt per stack (`prompts/architect/`, `prompts/backend/`, `prompts/frontend/`). Follow-up turns use `prompts/template/<stack>.md`. No prompt assembly from fragments.
@@ -287,7 +291,7 @@ templates/
 
 **Clarification without blocking** — When the Architect needs user input it calls `askUser({ question, options? })`. The turn exits with outcome `clarify`; the REPL collects the answer and feeds it back. Backend and Frontend agents cannot ask — design is settled before they run.
 
-**Session persistence** — `.bna/session.json` and `.bna/blueprint.json` inside the generated project hold the full conversation history, file journal, env-var queue, and architectural plan. Running `bna build` in that directory resumes automatically, skipping the orchestrator and going straight to follow-up mode.
+**Session persistence** — `.bna/session.json` and `.bna/blueprint.json` inside the generated project hold the full conversation history, file journal, env-var queue, and architectural plan. Running `bna` in that directory resumes automatically, skipping the orchestrator and going straight to follow-up mode.
 
 ---
 

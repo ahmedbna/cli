@@ -16,7 +16,12 @@ import { generalSystemPrompt } from './prompts.js';
 import { refreshAuthToken } from '../utils/auth.js';
 import { ContextManager } from './contextManager.js';
 import type { InstallManager } from '../utils/installManager.js';
-import { getAuthToken, CONVEX_SITE_URL } from '../utils/store.js';
+import { getAuthToken } from '../utils/store.js';
+import {
+  fetchStream as fetchAgentStream,
+  fetchStreamWithRetry,
+  extractErrorMessage,
+} from '../utils/apiClient.js';
 import { buildToolDefinitions, executeTool, type ToolName } from './tools.js';
 import { startSpinner, stopActiveSpinner } from '../utils/liveSpinner.js';
 
@@ -183,12 +188,12 @@ export async function runAgent(options: AgentOptions): Promise<void> {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let response: Response;
     try {
-      response = await fetchStream(
-        CONVEX_SITE_URL,
+      response = await fetchStreamWithRetry(
         authToken,
         systemPrompt,
         context.getMessages(),
         stackToolDefinitions,
+        { label: 'Agent' },
       );
     } catch (err: any) {
       log.error(`Network error: ${err.message ?? 'Unknown error'}`);
@@ -202,8 +207,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
         authToken = refreshedToken;
         log.success('Token refreshed, retrying...');
         try {
-          response = await fetchStream(
-            CONVEX_SITE_URL,
+          response = await fetchAgentStream(
             authToken,
             systemPrompt,
             context.getMessages(),
@@ -233,19 +237,7 @@ export async function runAgent(options: AgentOptions): Promise<void> {
     }
 
     if (!response.ok) {
-      let errMsg = `API request failed (${response.status})`;
-      try {
-        const contentType = response.headers.get('content-type') ?? '';
-        if (contentType.includes('application/json')) {
-          const errJson = await response.json();
-          errMsg = errJson.error ?? errJson.message ?? JSON.stringify(errJson);
-        } else {
-          errMsg = await response.text();
-        }
-      } catch {
-        /* ignore */
-      }
-      log.error(errMsg);
+      log.error(await extractErrorMessage(response));
       process.exit(1);
     }
 
@@ -347,25 +339,6 @@ export async function runAgent(options: AgentOptions): Promise<void> {
 
   log.success(chalk.bold('Code generation complete!'));
   console.log();
-}
-
-// ─── HTTP helpers ────────────────────────────────────────────────────────────
-
-async function fetchStream(
-  siteUrl: string,
-  authToken: string,
-  systemPrompt: string,
-  messages: any[],
-  tools: any[],
-): Promise<Response> {
-  return fetch(`${siteUrl}/cli/chat`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${authToken}`,
-    },
-    body: JSON.stringify({ system: systemPrompt, messages, tools }),
-  });
 }
 
 // ─── SSE stream reader ───────────────────────────────────────────────────────

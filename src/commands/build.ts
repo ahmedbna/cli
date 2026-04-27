@@ -171,6 +171,17 @@ function hasSavedSession(projectRoot: string): boolean {
   return fs.existsSync(path.join(projectRoot, '.bna', 'session.json'));
 }
 
+// Broader check: any persisted BNA state under `.bna/` (session OR blueprint).
+// We treat a project with either as "already a BNA project" so `bna` drops
+// straight into chat instead of trying to re-scaffold over the user's work.
+function hasSavedState(projectRoot: string): boolean {
+  const bnaDir = path.join(projectRoot, '.bna');
+  return (
+    fs.existsSync(path.join(bnaDir, 'session.json')) ||
+    fs.existsSync(path.join(bnaDir, 'blueprint.json'))
+  );
+}
+
 function looksLikeBnaProject(projectRoot: string): boolean {
   // Heuristic: directory has package.json + app/ + (convex/ or babel.config.js)
   // If it looks like a BNA project, we don't clobber it even without .bna/.
@@ -223,7 +234,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
   // Case C: cwd is empty → scaffold into cwd
   // Case D: cwd has stuff but no session → ask before clobbering
 
-  if (!options.name && hasSavedSession(cwd)) {
+  if (!options.name && hasSavedState(cwd)) {
     // ─── RESUME PATH ────────────────────────────────────────────────────
     await resumeSession(cwd);
     return;
@@ -238,7 +249,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     projectName = options.name;
     projectRoot = path.resolve(cwd, projectName);
     // If the target exists AND has a session, resume it instead of re-scaffolding.
-    if (fs.existsSync(projectRoot) && hasSavedSession(projectRoot)) {
+    if (fs.existsSync(projectRoot) && hasSavedState(projectRoot)) {
       log.info(
         `Found existing session at ${chalk.cyan(projectRoot)} — resuming.`,
       );
@@ -537,6 +548,16 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
 async function resumeSession(projectRoot: string): Promise<void> {
   const snapshot = Session.tryLoad(projectRoot);
   if (!snapshot) {
+    // No session file but `.bna/blueprint.json` exists (interrupted build, or
+    // user kept the blueprint and discarded the session). Drop into a fresh
+    // chat session over the existing project rather than refusing.
+    if (fs.existsSync(path.join(projectRoot, '.bna', 'blueprint.json'))) {
+      log.info(
+        `Found existing blueprint at ${chalk.cyan(projectRoot)} — starting a fresh chat session.`,
+      );
+      await startFreshSessionInExistingProject(projectRoot);
+      return;
+    }
     log.error(`Could not load session at ${chalk.cyan(projectRoot)}.`);
     return;
   }

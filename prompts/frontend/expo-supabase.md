@@ -18,7 +18,7 @@ The Architect's blueprint is the canonical record of the app's design — it is 
 
 ## Project layout
 
-```
+```text
 project/
 ├── app.json                  # YOU UPDATE — name, slug, scheme, ids
 ├── package.json              # do not modify

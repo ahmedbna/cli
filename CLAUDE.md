@@ -19,28 +19,29 @@ npm start
 
 # Main CLI commands (after install)
 bna login
-bna build --name my-app --frontend expo --backend convex --prompt "describe app"
-bna build --skills pptx,xlsx  # opt-in Agent Skills
-bna build --no-install --no-run   # skip post-gen steps
+bna                                                         # default: resume session in cwd, else scaffold
+bna init --name my-app --frontend expo --backend convex --prompt "describe app"
+bna --skills pptx,xlsx     # opt-in Agent Skills
+bna --no-install --no-run  # skip post-gen steps
 bna credits
 bna config --show
 ```
 
-No test suite or linter is configured in this repo. If no subcommand is given, `bna` falls through to `configCommand()` (see `src/index.ts`), not `build`.
+No test suite or linter is configured in this repo. Running `bna` with no subcommand calls `generateCommand()` (the build/REPL entry); `bna init` is an explicit alias for the same flow.
 
 ## Architecture
 
 ### Entry & Command Routing
 
-`src/index.ts` — Commander.js router. Commands: `login`, `logout`, `build` (alias `b`), `credits`, `config`, plus `stacks.ts` helpers for stack selection. Build flags are `--frontend`, `--backend`, `--skills`, `--no-install`, `--no-run`.
+`src/index.ts` — Commander.js router. Commands: `login`, `logout`, `init`, `credits`, `config`, plus `stacks.ts` helpers for stack selection. Running bare `bna` (no subcommand) executes `generateCommand` directly — same entry as `bna init`. Build flags (`--prompt`, `--name`, `--frontend`, `--backend`, `--skills`, `--no-install`, `--no-run`) are accepted on both the root command and `init`.
 
 ### Build Pipeline (`src/commands/build.ts`)
 
 Context-aware entry logic:
 
 - `--name` given, or empty directory → scaffold new project + run REPL
-- Existing directory with `.bna/session.json` → resume saved session
-- Existing BNA-like project (has `package.json` + `app/`) but no session → prompt: fresh session or new subdirectory
+- Existing directory with `.bna/session.json` or `.bna/blueprint.json` → resume saved session (blueprint-only falls through to a fresh chat session over the existing project)
+- Existing BNA-like project (has `package.json` + `app/`) but no `.bna/` state → prompt: fresh session or new subdirectory
 - Other non-empty directory → prompt for project name
 
 After context resolution:
@@ -58,7 +59,7 @@ The initial build runs as three isolated phases via `src/session/orchestrator.ts
 
 ```text
 User prompt → orchestrator.runInitialBuildPipeline
-  ├── Phase 1: architectAgent    (1-3 rounds, no FS access, calls proposeBlueprint)
+  ├── Phase 1: architectAgent    (1-8 rounds, no FS access, calls proposeBlueprint)
   │   └── Blueprint persisted to .bna/blueprint.json
   ├── Phase 2: backendAgent      (5-15 rounds, writes convex/* or supabase/*)
   │   └── Reports finalContracts via finishBackend — may amend architect's signatures
@@ -89,7 +90,7 @@ Add `prompts/architect/<stack>.md`, `prompts/backend/<stack>.md`, and `prompts/f
 
 - `session.ts` — Holds conversation history, file operation journal (for `/undo`), env vars, turn count, and the `Blueprint` object (`getBlueprint()` / `setBlueprint()`). Serializes to `.bna/session.json`; blueprint is separately persisted to `.bna/blueprint.json` and restored on load. `ContextManager` is initialized with `keepRecentRounds: 3`, `toolResultMaxChars: 400`, `createFileContentMaxChars: 200`, `viewDedupWindow: 4`.
 - `repl.ts` — Interactive readline loop. First turn routes to `runInitialBuildPipeline` (orchestrator); subsequent turns call `runAgentTurn`. Ctrl-C once interrupts the running turn; Ctrl-C twice within 2s exits. To resume a saved session, run `bna build` in (or with `--name` pointing to) the project directory.
-- `agentTurn.ts` — Single-agent loop used for **follow-up turns only**. Streams SSE from `/cli/chat`, parses tool calls, executes tools, loops until `end_turn` or `askUser`/`finish` (hard cap: `MAX_ROUNDS_PER_TURN = 30`). Injects the blueprint as additional context on the first follow-up turn via `buildBlueprintContext`. HTTP 401 triggers token refresh + retry; HTTP 402 means insufficient credits; retries 502/503/504 up to 3 times with backoff.
+- `agentTurn.ts` — Single-agent loop used for **follow-up turns only**. Streams SSE from `/cli/chat` via `apiClient.fetchStreamWithRetry`, parses tool calls, executes tools, loops until `end_turn` or `askUser`/`finish` (hard cap: `MAX_ROUNDS_PER_TURN = 30`). Injects the blueprint as additional context on the first follow-up turn via `buildBlueprintContext`. HTTP 401 triggers token refresh + retry; HTTP 402 means insufficient credits. Warns the user at round 20 (`LONG_TURN_THRESHOLD`) if a turn is running long.
 - `orchestrator.ts` — Wires the three build phases together. Persists/reloads the blueprint between phases. Returns a `TurnOutcome` so `repl.ts` doesn't need to know it ran three agents.
 - `planner.ts` — Defines `TurnOutcome` (`complete | clarify | interrupted | error`) and the `askUser` / `finish` tool definitions.
 
@@ -109,7 +110,7 @@ Full slash-command list (`/help` shows these at runtime):
 
 ### Agent Core (`src/agent/`)
 
-- `agent.ts` — Headless agent loop (`runAgent`), used **only** by `tsCheck.ts` for TypeScript autofix during finalization. Not called during the interactive REPL.
+- `agent.ts` — Headless agent loop (`runAgent`), used **only** by `tsCheck.ts` for TypeScript autofix during finalization. Not called during the interactive REPL. Uses `apiClient.fetchStreamWithRetry` like the other agents.
 - `tools.ts` — 12 tool definitions (Zod schemas) + executors: `createFile`, `editFile`, `deleteFile`, `renameFile`, `viewFile`, `readMultipleFiles`, `listDirectory`, `searchFiles`, `runCommand`, `lookupDocs`, `addEnvironmentVariables`, `checkDependencies`. (`askUser` / `finish` live in `session/planner.ts`.) `editFile` requires `oldText` to appear exactly once (under 1024 chars). `runCommand` default timeout is 180 s; npm-family commands serialize behind InstallManager. `addEnvironmentVariables` only queues names — values are collected interactively at finalization.
 - `blueprint.ts` — `Blueprint` interface + Zod-validated sub-schemas. Also exports `formatTablesForAgent`, `formatContractsForAgent`, `formatScreensForAgent` helpers used to build agent messages.
 - `architectPrompt.ts` — Loads `prompts/architect/<stack>.md`, `prompts/backend/<stack>.md`, `prompts/frontend/<stack>.md` at runtime.
@@ -147,18 +148,18 @@ The terminal UI is built with [Ink](https://github.com/vadimdemedes/ink) (React 
 
 ### Utils (`src/utils/`)
 
-| File                | Purpose                                                          |
-| ------------------- | ---------------------------------------------------------------- |
-| `auth.ts`           | OAuth token storage + refresh                                    |
-| `store.ts`          | Conf-based persistent config (`~/.config/bna-cli/`)              |
-| `credits.ts`        | Credit balance helpers used by `bna credits` and pre-turn gating |
-| `installManager.ts` | Background npm orchestration with streaming output               |
-| `tsCheck.ts`        | TypeScript validation + autofix after generation                 |
-| `gitInit.ts`        | Git repo initialization post-build                               |
-| `logger.ts`         | Chalk-based pretty terminal output                               |
-| `liveSpinner.ts`    | Ora-based reusable spinners                                      |
-| `shell.ts`          | Terminal output cleaning / ANSI stripping                        |
-| `stripIndent.ts`    | Template-literal indent helper for prompt strings                |
+| File                | Purpose                                                                                                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apiClient.ts`      | Shared HTTP client for `/cli/chat`: `fetchStream`, `fetchStreamWithRetry` (502/503/504, 3 attempts, exp backoff), `extractErrorMessage` (strips HTML from proxies). All four agents import from here. |
+| `auth.ts`           | OAuth token storage + refresh                                                                                                                                                                         |
+| `store.ts`          | Conf-based persistent config (`~/.config/bna-cli/`)                                                                                                                                                   |
+| `credits.ts`        | Credit balance helpers used by `bna credits` and pre-turn gating                                                                                                                                      |
+| `installManager.ts` | Background npm orchestration with streaming output                                                                                                                                                    |
+| `tsCheck.ts`        | TypeScript validation + autofix after generation                                                                                                                                                      |
+| `gitInit.ts`        | Git repo initialization post-build                                                                                                                                                                    |
+| `logger.ts`         | Chalk-based pretty terminal output                                                                                                                                                                    |
+| `liveSpinner.ts`    | Ora-based reusable spinners                                                                                                                                                                           |
+| `shell.ts`          | Terminal output cleaning / ANSI                                                                                                                                                                       |
 
 ### Templates
 

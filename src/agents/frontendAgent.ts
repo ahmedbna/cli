@@ -19,8 +19,11 @@
 //   - askUser (no clarification — design is settled)
 
 import chalk from 'chalk';
-import { CONVEX_SITE_URL } from '../utils/store.js';
 import { refreshAuthToken } from '../utils/auth.js';
+import {
+  fetchStreamWithRetry,
+  extractErrorMessage,
+} from '../utils/apiClient.js';
 import {
   buildToolDefinitions,
   executeTool,
@@ -97,18 +100,13 @@ export async function runFrontendAgent(
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let response: Response;
     try {
-      response = await fetch(`${CONVEX_SITE_URL}/cli/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          system: systemPrompt,
-          messages: context.getMessages(),
-          tools,
-        }),
-      });
+      response = await fetchStreamWithRetry(
+        authToken,
+        systemPrompt,
+        context.getMessages(),
+        tools,
+        { label: 'Frontend' },
+      );
     } catch (err: any) {
       return {
         ok: false,
@@ -137,10 +135,9 @@ export async function runFrontendAgent(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
       return {
         ok: false,
-        reason: `Frontend API error (${response.status}): ${text.slice(0, 200)}`,
+        reason: `Frontend — ${await extractErrorMessage(response)}`,
       };
     }
 

@@ -16,7 +16,11 @@ import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
 import { log } from '../utils/logger.js';
 import { refreshAuthToken } from '../utils/auth.js';
-import { CONVEX_SITE_URL } from '../utils/store.js';
+import {
+  fetchStream,
+  fetchStreamWithRetry,
+  extractErrorMessage,
+} from '../utils/apiClient.js';
 import {
   buildToolDefinitions,
   executeTool,
@@ -187,7 +191,7 @@ export async function runAgentTurn(
         systemPrompt,
         session.context.getMessages(),
         allTools,
-        session,
+        { isInterrupted: () => session.isInterruptRequested() },
       );
     } catch (err: any) {
       emit({ type: 'thinking-stop' });
@@ -216,7 +220,6 @@ export async function runAgentTurn(
       else log.success('Token refreshed, retrying...');
       try {
         response = await fetchStream(
-          CONVEX_SITE_URL,
           refreshed,
           systemPrompt,
           session.context.getMessages(),
@@ -420,106 +423,6 @@ function buildBlueprintContext(session: Session): string {
   );
 
   return sections.join('\n');
-}
-
-// ─── HTTP helpers ──────────────────────────────────────────────────────────
-
-async function fetchStream(
-  siteUrl: string,
-  authToken: string,
-  systemPrompt: string,
-  messages: any[],
-  tools: any[],
-): Promise<Response> {
-  return fetch(`${siteUrl}/cli/chat`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${authToken}`,
-    },
-    body: JSON.stringify({ system: systemPrompt, messages, tools }),
-  });
-}
-
-const RETRYABLE_STATUSES = new Set([502, 503, 504]);
-const MAX_FETCH_RETRIES = 3;
-
-async function fetchStreamWithRetry(
-  authToken: string,
-  systemPrompt: string,
-  messages: any[],
-  tools: any[],
-  session: Session,
-): Promise<Response> {
-  let lastResponse: Response | null = null;
-
-  for (let attempt = 0; attempt < MAX_FETCH_RETRIES; attempt++) {
-    if (session.isInterruptRequested()) {
-      if (lastResponse) return lastResponse;
-      throw new Error('interrupted');
-    }
-
-    const response = await fetchStream(
-      CONVEX_SITE_URL,
-      authToken,
-      systemPrompt,
-      messages,
-      tools,
-    );
-
-    if (!RETRYABLE_STATUSES.has(response.status)) return response;
-    lastResponse = response;
-
-    try {
-      await response.text();
-    } catch {
-      /* noop */
-    }
-
-    if (attempt < MAX_FETCH_RETRIES - 1) {
-      const delay = 1000 * Math.pow(2, attempt);
-      const msg = `Backend returned ${response.status} — retrying in ${delay / 1000}s (attempt ${attempt + 2}/${MAX_FETCH_RETRIES})...`;
-      if (isUiActive()) emit({ type: 'warn', text: msg });
-      else log.warn(msg);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-
-  return lastResponse!;
-}
-
-async function extractErrorMessage(response: Response): Promise<string> {
-  const status = response.status;
-  const statusText = response.statusText || '';
-
-  if (status === 502)
-    return 'Server unavailable (502). The Convex backend is temporarily unreachable.';
-  if (status === 503)
-    return 'Service temporarily unavailable (503). Please try again.';
-  if (status === 504) return 'Upstream timeout (504). Please try again.';
-  if (status === 429)
-    return 'Rate limited (429). Please wait a few seconds and try again.';
-
-  const ct = response.headers.get('content-type') ?? '';
-  try {
-    if (ct.includes('application/json')) {
-      const j = await response.json();
-      return (
-        j.error ?? j.message ?? `API request failed (${status} ${statusText})`
-      );
-    }
-    const text = await response.text();
-    if (
-      ct.includes('text/html') ||
-      /<!DOCTYPE|<html/i.test(text.slice(0, 100))
-    ) {
-      return `API request failed (${status} ${statusText || 'error'}).`;
-    }
-    const preview = text.trim().slice(0, 300);
-    return `API request failed (${status}): ${preview}${text.length > 300 ? '...' : ''}`;
-  } catch {
-    return `API request failed (${status} ${statusText})`;
-  }
 }
 
 // ─── SSE stream reader ─────────────────────────────────────────────────────

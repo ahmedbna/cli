@@ -22,8 +22,11 @@
 
 import chalk from 'chalk';
 import { z } from 'zod';
-import { CONVEX_SITE_URL } from '../utils/store.js';
 import { refreshAuthToken } from '../utils/auth.js';
+import {
+  fetchStreamWithRetry,
+  extractErrorMessage,
+} from '../utils/apiClient.js';
 import {
   buildToolDefinitions,
   executeTool,
@@ -188,18 +191,13 @@ export async function runBackendAgent(
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let response: Response;
     try {
-      response = await fetch(`${CONVEX_SITE_URL}/cli/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          system: systemPrompt,
-          messages: context.getMessages(),
-          tools,
-        }),
-      });
+      response = await fetchStreamWithRetry(
+        authToken,
+        systemPrompt,
+        context.getMessages(),
+        tools,
+        { label: 'Backend' },
+      );
     } catch (err: any) {
       return {
         ok: false,
@@ -225,10 +223,9 @@ export async function runBackendAgent(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
       return {
         ok: false,
-        reason: `Backend API error (${response.status}): ${text.slice(0, 200)}`,
+        reason: `Backend — ${await extractErrorMessage(response)}`,
       };
     }
 

@@ -15,8 +15,11 @@
 
 import chalk from 'chalk';
 import { z } from 'zod';
-import { CONVEX_SITE_URL } from '../utils/store.js';
 import { refreshAuthToken } from '../utils/auth.js';
+import {
+  fetchStreamWithRetry,
+  extractErrorMessage,
+} from '../utils/apiClient.js';
 import { readSkill, getSkillNamesForStack } from '../agent/skills.js';
 import { emit, isUiActive } from '../ui/events.js';
 import { log } from '../utils/logger.js';
@@ -406,18 +409,13 @@ export async function runArchitectAgent(
     for (let round = 0; round < MAX_ROUNDS; round++) {
       let response: Response;
       try {
-        response = await fetch(`${CONVEX_SITE_URL}/cli/chat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
-          },
-          body: JSON.stringify({
-            system: systemPrompt,
-            messages,
-            tools,
-          }),
-        });
+        response = await fetchStreamWithRetry(
+          authToken,
+          systemPrompt,
+          messages,
+          tools,
+          { label: 'Architect' },
+        );
       } catch (err: any) {
         return {
           ok: false,
@@ -447,10 +445,9 @@ export async function runArchitectAgent(
       }
 
       if (!response.ok) {
-        const text = await response.text().catch(() => '');
         return {
           ok: false,
-          reason: `Architect API error (${response.status}): ${text.slice(0, 200)}`,
+          reason: `Architect — ${await extractErrorMessage(response)}`,
         };
       }
 
