@@ -77,7 +77,7 @@ export const myFunc = process.env.DEBUG
 
 The set of callable Convex functions is locked in at deploy. Changing `DEBUG` afterward won't change which export wins — it'll throw at runtime.
 
-✅ Branch **inside** the handler instead:
+Branch **inside** the handler instead:
 
 ```ts
 export const myFunc = mutation({

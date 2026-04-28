@@ -11,11 +11,11 @@ The fix: write a Postgres function and call it via `supabase.rpc()`. One round-t
 
 ## When to use a database function
 
-✅ **Atomic counters** (likes, views, balances).
-✅ **Multi-table writes that must succeed together** (order + line items, user signup with team membership).
-✅ **Logic that depends on data the client shouldn't see** (pricing rules, stock levels, secret config).
-✅ **Aggregations the client would otherwise do in JS** (computing a leaderboard).
-✅ **Authorization checks that involve joining tables** (`is_org_member`, `has_credits`).
+**Atomic counters** (likes, views, balances).
+**Multi-table writes that must succeed together** (order + line items, user signup with team membership).
+**Logic that depends on data the client shouldn't see** (pricing rules, stock levels, secret config).
+**Aggregations the client would otherwise do in JS** (computing a leaderboard).
+**Authorization checks that involve joining tables** (`is_org_member`, `has_credits`).
 
 **Don't** use them as a generic "API layer." Plain `from(...)` queries with RLS are simpler, type-safer, and faster to iterate on. Reach for RPC when you have a real reason.
 
@@ -134,7 +134,7 @@ Two users tap "like" simultaneously: both read `5`, both write `6`. The fix has 
 ### Fix 1: column expression (simple, no function needed)
 
 ```ts
-// ✅ Single statement, atomic at the row level
+// Single statement, atomic at the row level
 const { error } = await supabase.from('posts').update({
   like_count: supabase.rpc('like_count + 1' /* won't work, just for shape */),
 });
@@ -243,7 +243,7 @@ create function get_post(post_id uuid) returns ... as $$
   select * from posts where id = post_id;
 $$;
 
--- ✅ clear
+-- clear
 create function get_post(_post_id uuid) returns ... as $$
   select * from posts where id = _post_id;
 $$;

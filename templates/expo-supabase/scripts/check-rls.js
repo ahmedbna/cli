@@ -50,7 +50,7 @@ try {
     process.exit(1);
   }
 
-  console.log('✅ All public tables have RLS enabled.');
+  console.log('All public tables have RLS enabled.');
 } catch (err) {
   console.error('RLS check failed:', err.message);
   process.exit(1);

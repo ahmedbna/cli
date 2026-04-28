@@ -229,7 +229,7 @@ UI imports from `@/supabase/api`. The raw client is wrapped exactly once. This i
 import { supabase } from '@/supabase/client';
 const { data } = await supabase.from('posts').select('*');
 
-// ✅ Good
+// Good
 import { api } from '@/supabase/api';
 const posts = await api.posts.list();
 ```

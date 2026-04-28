@@ -56,46 +56,6 @@ files: defineTable({
 }).index('by_user', ['userId']);
 ```
 
-## React Native Upload
-
-```tsx
-import * as ImagePicker from 'expo-image-picker';
-import { useMutation } from 'convex/react';
-import { api } from '@/convex/_generated/api';
-
-function UploadButton() {
-  const generateUploadUrl = useMutation(api.files.generateUploadUrl);
-  const saveFile = useMutation(api.files.saveFile);
-
-  const pickAndUpload = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.8,
-    });
-    if (result.canceled) return;
-
-    const asset = result.assets[0];
-    const blob = await (await fetch(asset.uri)).blob();
-
-    // Step 1: Get upload URL
-    const uploadUrl = await generateUploadUrl();
-
-    // Step 2: POST file, parse storageId from response
-    const uploadResponse = await fetch(uploadUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': blob.type },
-      body: blob,
-    });
-    const { storageId } = await uploadResponse.json();
-
-    // Step 3: Save storageId to DB
-    await saveFile({ storageId });
-  };
-
-  return <Button onPress={pickAndUpload} title='Upload' />;
-}
-```
-
 ## Storing Generated Files in Actions
 
 For files fetched/generated server-side (e.g., AI-generated images from external APIs), use `ctx.storage.store(blob)` directly in an action:

@@ -45,7 +45,7 @@ export default function RootLayout() {
 const App = () => {
   const text = useColor('text');
   const background = useColor('background');
-  const { isDark } = useModeToggle(); // ✅ NOW SAFE
+  const { isDark } = useModeToggle(); // NOW SAFE
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -77,7 +77,7 @@ const App = () => {
         </ConvexAuthProvider>
       </KeyboardProvider>
 
-      {/* ✅ StatusBar MUST also be inside */}
+      {/* StatusBar MUST also be inside */}
       <StatusBar style={isDark ? 'light' : 'dark'} />
     </GestureHandlerRootView>
   );

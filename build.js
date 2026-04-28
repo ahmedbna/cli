@@ -12,4 +12,4 @@ await esbuild.build({
   define: { 'process.env.NODE_ENV': '"production"' },
 });
 
-console.log('✅ Build complete → dist/index.js');
+console.log('Build complete → dist/index.js');

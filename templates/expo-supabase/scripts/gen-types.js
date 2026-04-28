@@ -36,4 +36,4 @@ const header = `// supabase/types.ts
 `;
 
 writeFileSync(OUT, header + types);
-console.log(`✅ Wrote ${OUT}`);
+console.log(`Wrote ${OUT}`);

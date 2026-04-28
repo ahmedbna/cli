@@ -132,7 +132,7 @@ UI code imports from `@/supabase/api` — never the raw client. This is the sing
 import { supabase } from '@/supabase/client';
 const { data } = await supabase.from('users').select('*');
 
-// ✅ Good
+// Good
 import { api } from '@/supabase/api';
 const users = await api.users.getAll();
 ```
