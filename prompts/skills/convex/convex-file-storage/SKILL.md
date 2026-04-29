@@ -1,11 +1,11 @@
 ---
 name: convex-file-storage
-description: Use when implementing file uploads, image storage, media handling, file downloads, generating files in actions, or accessing file metadata with Convex storage. Trigger on "upload", "file storage", "store image", "media upload", "download file", "storageId", "AI image generation", or any feature involving user-uploaded or generated files.
+description: Implement file uploads, image storage, and downloads with Convex storage — store `storageId` in DB and resolve URLs on read.
 ---
 
 # Convex File Storage
 
-**Core rule:** Store `storageId` (not URLs) in DB. Generate URL on read: `await ctx.storage.getUrl(storageId)`. URLs from `generateUploadUrl()` expire in 1 hour. Upload POST timeout is 2 minutes.
+**Core rule:** Store `storageId` in DB (not URLs). Generate URL on read: `await ctx.storage.getUrl(storageId)`. Upload URLs from `generateUploadUrl()` expire in 1 hour. Upload POST timeout is 2 minutes.
 
 ## Client Upload Flow (3 steps)
 
@@ -58,10 +58,9 @@ files: defineTable({
 
 ## Storing Generated Files in Actions
 
-For files fetched/generated server-side (e.g., AI-generated images from external APIs), use `ctx.storage.store(blob)` directly in an action:
+For files fetched/generated server-side (e.g. AI-generated images), use `ctx.storage.store(blob)` directly:
 
 ```ts
-// convex/images.ts
 import { action, internalMutation } from './_generated/server';
 import { internal } from './_generated/api';
 import { v } from 'convex/values';
@@ -70,15 +69,12 @@ import { Id } from './_generated/dataModel';
 export const generateAndStore = action({
   args: { prompt: v.string() },
   handler: async (ctx, args) => {
-    // Generate or fetch the file (e.g., call DALL-E, get image URL)
     const imageUrl = 'https://...';
     const response = await fetch(imageUrl);
     const blob = await response.blob();
 
-    // Store in Convex
     const storageId: Id<'_storage'> = await ctx.storage.store(blob);
 
-    // Persist via internal mutation
     await ctx.runMutation(internal.images.storeResult, {
       storageId,
       prompt: args.prompt,
@@ -96,9 +92,9 @@ export const storeResult = internalMutation({
 
 ## Serving Files
 
-**Default:** Return URLs from queries via `ctx.storage.getUrl(storageId)` (shown in `getFiles` above). Use these directly in `<img src>` or `<Image>`.
+**Default:** Return URLs from queries via `ctx.storage.getUrl(storageId)`. Use directly in `<Image source={url} />`.
 
-**For access control at serve-time** (or files >20MB stay with URLs — HTTP actions cap at 20MB):
+**For access control or custom HTTP serving** (HTTP actions cap at 20MB):
 
 ```ts
 // convex/http.ts
@@ -148,8 +144,8 @@ export const getMetadata = query({
 
 ## Limits & Gotchas
 
-- **Upload URL via `generateUploadUrl`**: no file size limit, but POST has 2-min timeout. Use this for large files.
-- **HTTP action upload/serve**: capped at **20MB** request/response. Use only for small files or when you need custom CORS/auth at the HTTP layer.
+- **`generateUploadUrl`**: no file size limit, but POST has 2-min timeout. Use for large files.
+- **HTTP action upload/serve**: capped at **20MB**.
 - **Always validate `storageId` with `v.id("_storage")`** — never accept raw strings.
 - **Auth-gate `generateUploadUrl`** — anyone with the URL can upload until it expires.
-- **Don't store URLs in DB** — they expire. Store the `storageId` and resolve to URL on read.
+- **Don't store URLs in DB** — they expire. Store `storageId`.

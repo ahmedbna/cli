@@ -1,6 +1,6 @@
 ---
 name: expo-haptics-gestures
-description: Use when implementing haptic feedback, touch gestures (tap, long press, swipe, pan), or keyboard handling in React Native. Trigger on "haptics", "vibration", "gesture", "swipe", "long press", "pan gesture", "keyboard", "KeyboardAwareScrollView", or any touch interaction beyond basic onPress.
+description: Haptic feedback (`expo-haptics`) and touch gestures (`react-native-gesture-handler`) — tap, long press, swipe, pan.
 ---
 
 # Haptics & Gestures
@@ -10,7 +10,7 @@ description: Use when implementing haptic feedback, touch gestures (tap, long pr
 ```tsx
 import * as Haptics from "expo-haptics";
 
-// Light tap feedback (buttons, toggles)
+// Light tap (buttons, toggles)
 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
 // Medium impact (selection, drag end)
@@ -33,9 +33,8 @@ Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
 ```tsx
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 
-// Tap gesture
+// Tap
 const tap = Gesture.Tap().onEnd(() => {
-  console.log("Tapped!");
   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 });
 
@@ -61,7 +60,7 @@ const swipe = Gesture.Pan()
     }
   });
 
-// Compose gestures
+// Compose
 const composed = Gesture.Simultaneous(tap, longPress);
 
 return (
@@ -73,7 +72,7 @@ return (
 );
 ```
 
-## Keyboard handling — react-native-keyboard-controller (already in template)
+## Keyboard handling — react-native-keyboard-controller
 
 ALWAYS use this instead of KeyboardAvoidingView.
 
@@ -93,8 +92,8 @@ function FormScreen() {
 
 ## Rules
 
-- Use haptics on all interactive elements for native feel
+- Use haptics on interactive elements for native feel
 - NEVER use `KeyboardAvoidingView` — use `react-native-keyboard-controller`
 - Wrap gesture-interactive components with `GestureDetector`
 - Combine gestures with reanimated for smooth interactions
-- Root layout must include `GestureHandlerRootView` (already in template)
+- Root layout must include `GestureHandlerRootView`

@@ -1,17 +1,15 @@
 ---
 name: expo-supabase-notifications
-description: Use when wiring expo-notifications into a Supabase backend — storing Expo push tokens in a Postgres table with RLS, sending pushes from a Supabase Edge Function via the Expo Push API, fanning out to multiple devices, scheduling pushes with pg_cron, or handling delivery receipts. Trigger on "Supabase push notifications", "Supabase notifications", "store push token in Supabase", "send notification from Supabase", "Expo push API from edge function", "scheduled notification Supabase", "pg_cron push", or any flow where the Expo client needs to register a token with Supabase and Supabase needs to push back. Read the base `expo-notifications` skill first for the client-side pieces, and `supabase-edge-functions` for general Edge Function mechanics — this skill picks up where those end.
+description: Wire expo-notifications into Supabase — store push tokens with RLS, send via Edge Function + Expo Push API, schedule with pg_cron. Read `expo-notifications` skill first.
 ---
 
 # Expo + Supabase Notifications
 
-This is the Supabase-side companion to `expo-notifications`. The base skill covers the client (permissions, channels, getting the token, scheduling local notifications). This skill covers everything that lives on the server: storing the token in Postgres with RLS, sending pushes via the Expo Push Service from a Supabase Edge Function, and scheduling them with pg_cron.
+Client inserts/updates token in a `push_tokens` table (RLS-protected). When pushing, an Edge Function uses the service role key to read tokens and POSTs to Expo's push API.
 
-The mental model: the client inserts/updates its token in a `push_tokens` table directly (RLS makes it safe). When a push needs to go out, an Edge Function — either invoked from the app, from a webhook, or from pg_cron — looks up the relevant tokens with the service role key and POSTs to Expo's push API.
+## 1. Migration — `push_tokens` table
 
-## 1. Migration — the `push_tokens` table
-
-Tokens belong on a separate table, not on `public.users`. One user can have multiple devices (phone + tablet), tokens rotate independently per device, and a join table makes RLS clean.
+Use a join table, not `public.users` — multi-device support + rotation requires it.
 
 ```sql
 -- supabase/migrations/0005_push_tokens.sql
@@ -27,11 +25,8 @@ create table public.push_tokens (
 
 create index push_tokens_user_id_idx on public.push_tokens (user_id);
 
--- RLS — every public table needs this enabled. The anon key is shipped to
--- every client; without RLS this is a public data leak.
 alter table public.push_tokens enable row level security;
 
--- A user can read, insert, update, delete their own tokens. Nothing else.
 create policy "push_tokens_select_self"
   on public.push_tokens for select
   using (auth.uid() = user_id);
@@ -50,9 +45,7 @@ create policy "push_tokens_delete_self"
   using (auth.uid() = user_id);
 ```
 
-The `unique` constraint on `token` is what makes the upsert pattern work — re-registration on cold start patches the existing row instead of creating a duplicate.
-
-After applying:
+The `unique` constraint on `token` makes upsert work — re-registration patches existing rows.
 
 ```bash
 npm run db:reset
@@ -61,19 +54,11 @@ npm run db:types
 
 ## 2. API module — `supabase/api/pushTokens.ts`
 
-Following the project's "no `supabase.from()` in UI code" rule, all token logic lives in the api module. Mirror of how `users.ts` is structured.
-
 ```ts
-// supabase/api/pushTokens.ts
 import { supabase } from '@/supabase/client';
 import { ApiError, requireUserId } from './_helpers';
 
 export const pushTokens = {
-  /**
-   * Idempotent register — call this every time the client gets a token.
-   * Re-registration just updates last_seen_at. The unique constraint on
-   * `token` plus `onConflict` makes this safe.
-   */
   async register(args: {
     token: string;
     platform: 'ios' | 'android';
@@ -93,11 +78,8 @@ export const pushTokens = {
     if (error) throw new ApiError(error.message, error.code, error);
   },
 
-  /** Remove a single token — call this on sign-out to stop pushes to this device. */
   async remove(token: string) {
     const userId = await requireUserId();
-    // RLS already restricts to own rows, but explicit eq matches both keys
-    // for clarity and sidesteps a needless full-table scan.
     const { error } = await supabase
       .from('push_tokens')
       .delete()
@@ -107,8 +89,6 @@ export const pushTokens = {
   },
 };
 ```
-
-Add it to the api barrel:
 
 ```ts
 // supabase/api/index.ts
@@ -120,8 +100,6 @@ export const api = { users, auth, pushTokens };
 ```
 
 ## 3. Client — register on sign-in, listen for rotation
-
-Use the `registerForPushNotificationsAsync` helper from the base `expo-notifications` skill, then push the token to Supabase once authenticated:
 
 ```tsx
 // hooks/usePushTokenSync.ts
@@ -138,7 +116,6 @@ export function usePushTokenSync() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-
     let active = true;
 
     registerForPushNotificationsAsync().then((token) => {
@@ -150,8 +127,7 @@ export function usePushTokenSync() {
       });
     });
 
-    // Token rotation — fires when FCM/APNs invalidates the old token.
-    // Without this, the device silently stops receiving pushes.
+    // Token rotation
     const sub = Notifications.addPushTokenListener((next) => {
       api.pushTokens.register({
         token: next.data,
@@ -168,13 +144,11 @@ export function usePushTokenSync() {
 }
 ```
 
-Mount it inside the authenticated branch of your root layout. Sign-out should also call `api.pushTokens.remove(token)` before `signOut()` — otherwise the device keeps getting pushes after a logout.
+Mount inside the authenticated branch. Sign-out should call `api.pushTokens.remove(token)` before `signOut()`.
 
 ## 4. Edge Function — `send-push`
 
-This is where the actual sending happens. RLS doesn't apply here because we're using the service role client — that's required because we need to read tokens for users other than the caller (e.g., sending a push to the recipient of a new message).
-
-Read the `supabase-edge-functions` skill for the general structure (CORS, OPTIONS handler, admin client). Specifics for this function:
+Uses the service role admin client to read tokens for users other than caller (RLS would block).
 
 ```ts
 // supabase/functions/send-push/index.ts
@@ -202,11 +176,7 @@ type ExpoTicket =
       status: 'error';
       message: string;
       details?: {
-        error?:
-          | 'DeviceNotRegistered'
-          | 'InvalidCredentials'
-          | 'MessageTooBig'
-          | 'MessageRateExceeded';
+        error?: 'DeviceNotRegistered' | 'InvalidCredentials' | 'MessageTooBig' | 'MessageRateExceeded';
       };
     };
 
@@ -242,9 +212,6 @@ Deno.serve(async (req) => {
       body,
       data,
       sound: 'default',
-      // channelId must match a channel created on-device. The base
-      // expo-notifications skill creates a 'default' channel during
-      // registration; if you use named channels per feature, override here.
       channelId: t.platform === 'android' ? 'default' : undefined,
     }));
 
@@ -262,7 +229,6 @@ Deno.serve(async (req) => {
 
     const json = (await res.json()) as { data: ExpoTicket[] };
 
-    // Walk tickets in lockstep with tokens. DeviceNotRegistered → drop the row.
     let sent = 0;
     const deadIds: string[] = [];
     for (let i = 0; i < json.data.length; i++) {
@@ -296,11 +262,9 @@ Deno.serve(async (req) => {
 
 ## 5. Locking it down
 
-Two threats to defend against. Pick the one that matches your setup.
+**A. App-only sending.** Keep `verify_jwt = true` (default). Only authenticated users can invoke. Add server-side authorization check (caller can push to that userId).
 
-**A. App-only sending (most common).** Keep `verify_jwt = true` — the default. Only authenticated users of your app can invoke the function. This is fine when pushes are user-initiated (sending a chat message, etc.). But the client picks `userId` — so add a server-side check that the caller is allowed to push to that user (e.g., they're in the same conversation).
-
-**B. Webhook / cron sending.** Set `verify_jwt = false` in `config.toml`, then verify identity yourself with a shared secret:
+**B. Webhook/cron sending.** Set `verify_jwt = false` and verify with shared secret:
 
 ```toml
 [functions.send-push]
@@ -314,30 +278,25 @@ if (req.headers.get('x-function-secret') !== fnSecret) {
 }
 ```
 
-For local development, put the values in `supabase/functions/.env` (auto-loaded by `supabase start` and `supabase functions serve`):
+Local dev — `supabase/functions/.env`:
 
 ```
 EXPO_ACCESS_TOKEN=expo_test_xxx
 PUSH_FN_SECRET=local_dev_secret
 ```
 
-For production, push them with `supabase secrets set` — no redeploy needed, they're available on the next invocation:
+Production:
 
 ```bash
 supabase secrets set PUSH_FN_SECRET=$(openssl rand -hex 32)
 supabase secrets set EXPO_ACCESS_TOKEN=<your expo access token>
 ```
 
-See the `supabase-environment-variables` skill for the full secrets workflow (bulk loading from `.env`, choosing between built-in keys, debugging "undefined in prod", etc.).
+## 6. Triggering pushes
 
-Skipping the secret and leaving `verify_jwt = false` open means anyone on the internet can push to any of your users.
-
-## 6. Triggering pushes — three patterns
-
-**Pattern 1: From the client after a user action.** Example: user sends a chat message, then immediately invoke the function to push the recipient.
+**Pattern 1: From the client**:
 
 ```ts
-// somewhere after the message is inserted
 await supabase.functions.invoke('send-push', {
   body: {
     userId: recipientId,
@@ -348,7 +307,7 @@ await supabase.functions.invoke('send-push', {
 });
 ```
 
-**Pattern 2: From a Postgres trigger.** Cleaner for "every new row in `messages` pushes the recipient" type flows. Uses `pg_net` to fire-and-forget the function call.
+**Pattern 2: From a Postgres trigger** (uses `pg_net`):
 
 ```sql
 create or replace function public.notify_new_message()
@@ -379,9 +338,7 @@ create trigger messages_push_notify
   for each row execute function public.notify_new_message();
 ```
 
-The settings (`app.settings.supabase_url`, `app.settings.push_fn_secret`) come from one-time `alter database postgres set` calls — see the `supabase-edge-functions` skill.
-
-**Pattern 3: pg_cron for scheduled pushes.** Daily digests, retention pings, scheduled reminders.
+**Pattern 3: pg_cron for scheduled pushes**:
 
 ```sql
 select cron.schedule(
@@ -399,11 +356,9 @@ select cron.schedule(
 );
 ```
 
-`morning-digest` is a separate Edge Function that does whatever query work you need and either calls `send-push` per recipient or does the Expo POST itself (cleaner to keep one HTTP-to-Expo function and have other functions delegate to it via in-process logic or another invoke).
+## 7. Fan-out
 
-## 7. Fan-out: sending to many users
-
-Expo's API accepts up to 100 messages per request. For broadcasts, chunk:
+Expo accepts up to 100 messages per request:
 
 ```ts
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -412,7 +367,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-// Inside a broadcast Edge Function:
 const { data: allTokens } = await admin
   .from('push_tokens')
   .select('id, token, platform');
@@ -432,21 +386,21 @@ for (const group of chunk(allTokens ?? [], 100)) {
 }
 ```
 
-Edge Functions have execution time limits (currently around 60 seconds wall-clock). For broadcasts to tens of thousands of users, kick off pg_cron-style background work that processes batches across multiple invocations rather than trying to do it in one call.
+Edge Functions have ~60s wall-clock limit. For tens of thousands of users, batch across pg_cron invocations.
 
-## 8. Receipts (delivery confirmation)
+## 8. Receipts
 
-The response from `/push/send` is a **ticket** ("we accepted this") — not delivery confirmation. To confirm delivery, store ticket IDs and poll `/push/getReceipts` 15+ minutes later. Most consumer apps don't need this; transactional pushes (where loss is unacceptable) do. The pattern is the same as Convex: save ticket IDs to a `push_receipts` table, schedule a pg_cron job to drain them ~15 minutes later, react to `DeviceNotRegistered` by deleting tokens.
+`/push/send` returns **tickets** — not delivery confirmation. For transactional pushes, save ticket IDs to a `push_receipts` table, drain via pg_cron 15+ min later, drop tokens on `DeviceNotRegistered`.
 
 ## Hard rules
 
-- **RLS on every public table — `push_tokens` included.** The anon key is in your client bundle. One un-RLSed table is a leak.
-- **Don't put tokens on `users`.** Multi-device + rotation makes a join table the right shape.
-- **Upsert on `token`, not on `id`.** The unique constraint plus `onConflict: 'token'` makes registration idempotent. Inserting blindly accumulates duplicates with every cold start.
-- **Use the service role admin client inside `send-push`.** You need to read tokens for `userId` other than `auth.uid()` — RLS would block that. The admin client bypasses RLS; just verify the caller's authorization yourself before reading.
-- **Always honor `DeviceNotRegistered`.** Delete the token row when Expo says the device is gone. Otherwise dead tokens accumulate and broadcasts get slower.
-- **Set `channelId` on Android messages.** The base skill creates a `default` channel during registration — match it here. Without `channelId`, FCM uses a fallback that produces ugly defaults.
-- **Lock down the Edge Function.** Either keep `verify_jwt = true` and authorize per-call, or `verify_jwt = false` plus a shared secret header. Don't leave it open with no replacement check.
-- **Set `EXPO_ACCESS_TOKEN` in production.** Without it, anyone with one of your push tokens can push through your account.
-- **Remove tokens on sign-out.** A signed-out user keeps getting pushes if you don't.
-- **Don't await the function call inside a user-facing flow.** `supabase.functions.invoke` is async — fire it and let it run; don't block the UI on the push being sent.
+- **RLS on every public table.** Anon key ships in client bundle.
+- **Don't put tokens on `users`** — use the join table.
+- **Upsert on `token`** with `onConflict: 'token'`. Idempotent registration.
+- **Service role admin client in `send-push`** — needed to read other users' tokens.
+- **Honor `DeviceNotRegistered`** — delete the token row.
+- **Set `channelId` on Android** — match the on-device channel.
+- **Lock down the Edge Function** — either `verify_jwt: true` + authorization, or `verify_jwt: false` + shared secret.
+- **Set `EXPO_ACCESS_TOKEN` in production.**
+- **Remove tokens on sign-out.**
+- **Don't await `supabase.functions.invoke` in user-facing flows.**

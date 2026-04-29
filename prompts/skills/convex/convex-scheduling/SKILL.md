@@ -1,18 +1,14 @@
 ---
 name: convex-scheduling
-description: Use when implementing cron jobs, scheduled functions, delayed execution, recurring tasks, self-destructing data, or background jobs in Convex. Trigger on "cron", "scheduled", "recurring", "runAfter", "runAt", "delayed", "timer", "background job", "expire", "TTL", "retry", or any time-based function execution.
+description: Scheduled functions (`runAfter`/`runAt`) and cron jobs (`convex/crons.ts`) for delayed and recurring tasks.
 ---
 
 # Convex Scheduling
 
-Two related primitives:
-
-- **Scheduled functions** (`ctx.scheduler.runAfter` / `runAt`) — schedule a one-shot run from inside a mutation or action. Stored in the database, durable across restarts, can be scheduled minutes to months out.
+- **Scheduled functions** (`ctx.scheduler.runAfter` / `runAt`) — one-shot run from a mutation or action.
 - **Cron jobs** (`convex/crons.ts`) — recurring schedules defined declaratively at deploy time.
 
 ## Runtime Scheduling
-
-### Schedule after delay / at a time
 
 ```ts
 import { mutation, internalMutation } from './_generated/server';
@@ -23,7 +19,6 @@ export const sendExpiringMessage = mutation({
   args: { body: v.string(), author: v.string() },
   handler: async (ctx, { body, author }) => {
     const id = await ctx.db.insert('messages', { body, author });
-    // Self-destruct in 5 seconds
     await ctx.scheduler.runAfter(5000, internal.messages.destruct, {
       messageId: id,
     });
@@ -36,24 +31,22 @@ export const destruct = internalMutation({
 });
 ```
 
-- `runAfter(delayMs, fnRef, args)` — delay in **milliseconds** from now.
-- `runAt(timestampMs, fnRef, args)` — absolute Unix timestamp in **milliseconds**.
-- Both return an `Id<"_scheduled_functions">` you can store and later cancel.
+- `runAfter(delayMs, fnRef, args)` — delay in **milliseconds**.
+- `runAt(timestampMs, fnRef, args)` — absolute Unix ms timestamp.
+- Both return `Id<"_scheduled_functions">` for cancellation.
 
-### Atomicity rules — read carefully
+### Atomicity rules
 
-- **From a mutation:** scheduling is part of the transaction. If the mutation commits, the schedule is guaranteed. If it throws, nothing is scheduled — even if the throw happens _after_ the `runAfter` call.
-- **From an action:** scheduling is **not** transactional. An action can schedule a function and then fail; the scheduled run will still execute. Plan for this — don't assume "if my action errored, nothing was scheduled."
+- **From a mutation:** scheduling is part of the transaction. If the mutation rolls back, nothing is scheduled.
+- **From an action:** scheduling is **not** transactional. An action can schedule then fail; the schedule still runs.
 
-### `runAfter(0, ...)` — the immediate-side-effect pattern
+### `runAfter(0, ...)` pattern
 
-Use `runAfter(0, internal.x.action, args)` from a mutation when you want to trigger an action only if the mutation commits. This is the standard way to launch background work (e.g., calling an external API) tied to a successful DB write. It's the equivalent of `setTimeout(fn, 0)` but transaction-aware.
+Use from a mutation to trigger an action **only if the mutation commits**. Standard way to launch background work tied to a successful DB write.
 
-### Mutations can schedule, actions can schedule — queries cannot
+### Queries can't schedule — only mutations and actions.
 
-`ctx.scheduler` exists on mutation and action contexts. Queries are pure reads and have no scheduler.
-
-### Cancel a scheduled run
+### Cancel
 
 ```ts
 export const cancel = mutation({
@@ -62,12 +55,9 @@ export const cancel = mutation({
 });
 ```
 
-- If the run hasn't started, it won't run.
-- If it's already running, it finishes — but anything **it** schedules is canceled (cancellation cascades to children).
+If already running, it finishes — but anything **it** schedules is canceled (cascades to children).
 
 ### Inspecting scheduled runs
-
-Scheduled functions live in the `_scheduled_functions` system table. Read with `ctx.db.system.get` / `ctx.db.system.query`:
 
 ```ts
 export const listScheduled = query({
@@ -76,12 +66,11 @@ export const listScheduled = query({
 });
 ```
 
-Each row has `name`, `args`, `scheduledTime`, `completedTime`, and `state`:
-`"pending" | "inProgress" | "success" | "failed" | "canceled"`. Results are retained for **7 days** after completion.
+Each row: `name`, `args`, `scheduledTime`, `completedTime`, `state` (`pending | inProgress | success | failed | canceled`). Retained **7 days** after completion.
 
 ## Cron Jobs — `convex/crons.ts`
 
-Recurring schedules. The file must be `convex/crons.ts` and `default export` the `cronJobs()` instance.
+File must be `convex/crons.ts` and `default export` the `cronJobs()` instance.
 
 ```ts
 import { cronJobs } from 'convex/server';
@@ -89,11 +78,11 @@ import { internal } from './_generated/api';
 
 const crons = cronJobs();
 
-// Interval — finer than traditional cron (supports seconds)
+// Interval (supports seconds)
 crons.interval('cleanup', { hours: 2 }, internal.cleanup.run, {});
 crons.interval('sync', { minutes: 30 }, internal.sync.run, {});
 
-// Named helpers — UTC times, explicit fields
+// Named helpers — UTC times
 crons.daily(
   'daily report',
   { hourUTC: 9, minuteUTC: 0 },
@@ -102,52 +91,50 @@ crons.daily(
 );
 crons.monthly(
   'payment reminder',
-  { day: 1, hourUTC: 16, minuteUTC: 0 }, // 1st of month at 16:00 UTC
+  { day: 1, hourUTC: 16, minuteUTC: 0 },
   internal.payments.sendPaymentEmail,
-  { email: 'billing@example.com' }, // arg passed to the function
+  { email: 'billing@example.com' },
 );
 
-// Standard 5-field cron syntax (UTC). Use crontab.guru to verify.
+// Standard 5-field cron (UTC)
 crons.cron('nightly', '0 0 * * *', internal.reports.nightly, {});
 
 export default crons;
 ```
 
-Supported schedule helpers:
+| Helper                                                            | Use for                                                                    |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `crons.interval(name, { seconds \| minutes \| hours }, fn, args)` | Simple recurring; supports seconds-level. First run on deploy.             |
+| `crons.hourly` / `daily` / `weekly` / `monthly`                   | Common schedules with UTC fields.                                          |
+| `crons.cron(name, "m h dom mon dow", fn, args)`                   | 5-field cron, UTC.                                                         |
 
-| Helper                                                            | Use for                                                                                                    |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `crons.interval(name, { seconds \| minutes \| hours }, fn, args)` | Simple recurring; supports **seconds-level** granularity. First run fires when the cron is first deployed. |
-| `crons.hourly` / `daily` / `weekly` / `monthly`                   | Common schedules with named UTC fields — clearer than raw cron strings.                                    |
-| `crons.cron(name, "m h dom mon dow", fn, args)`                   | Traditional 5-field cron, **always UTC**.                                                                  |
+### Cron rules
 
-### Cron rules & gotchas
-
-- The first arg is a **unique identifier** — duplicate names fail to deploy.
-- Function ref is typically `internal.*` (you don't want clients invoking your cleanup job).
-- Scheduled work can be a **mutation or action**.
-- **All cron times are UTC.** Don't hand-write local-time crons; convert first.
-- **At most one run of a given cron executes at a time.** If the previous run is still going when the next is due, the next is **skipped** (logged on the dashboard). Keep cron handlers fast or use a fan-out pattern: cron schedules an action that immediately schedules child mutations/actions.
+- First arg is a **unique identifier** — duplicates fail to deploy.
+- Function ref is typically `internal.*`.
+- Can be a mutation or action.
+- **All times are UTC.**
+- **At most one run executes at a time** — overlapping runs are skipped.
 
 ## Limits
 
-- A single function can schedule up to **1000** functions per call, with combined argument size up to **8 MB**.
-- Scheduled-function results are kept for **7 days** in `_scheduled_functions`.
+- Up to **1000** functions scheduled per call, combined args **8 MB**.
+- Results retained **7 days**.
 
 ## Error handling & retries
 
-- **Scheduled mutations are exactly-once.** Convex retries internal/transient errors automatically; only developer errors fail the run.
-- **Scheduled actions are at-most-once.** Side effects mean Convex won't retry. If you need retry semantics, do it yourself: schedule a mutation that checks whether the work is done and re-schedules the action if not.
-- Cron-triggered functions follow the same rules (cron is just a trigger for scheduled mutations/actions).
+- **Scheduled mutations:** exactly-once. Convex retries transient errors.
+- **Scheduled actions:** at-most-once. No automatic retries (side effects).
+- For action retries, schedule a checking mutation that re-schedules if needed.
 
 ## Auth does **not** propagate
 
-The auth context of whoever scheduled a function is **not** carried into the scheduled run. If the scheduled function needs a user identity, pass `userId` (or whatever you need) as an explicit argument and re-check authorization inside the handler.
+Auth context is not carried into scheduled runs. Pass `userId` explicitly and re-check in the handler.
 
 ## Quick decision guide
 
-- "Run this once, X seconds/minutes/hours from now" → `ctx.scheduler.runAfter`
-- "Run this at this exact timestamp" → `ctx.scheduler.runAt`
-- "Run this every X / on a schedule forever" → cron in `convex/crons.ts`
-- "Trigger an action conditionally on a mutation succeeding" → `runAfter(0, internal.x.action, ...)` from the mutation
-- "Cancel a not-yet-run schedule" → `ctx.scheduler.cancel(id)`
+- "Run once X from now" → `ctx.scheduler.runAfter`
+- "Run at exact timestamp" → `ctx.scheduler.runAt`
+- "Run on a recurring schedule" → cron in `convex/crons.ts`
+- "Trigger action conditionally on mutation success" → `runAfter(0, internal.x.action, ...)`
+- "Cancel" → `ctx.scheduler.cancel(id)`

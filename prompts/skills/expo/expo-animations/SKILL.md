@@ -1,6 +1,6 @@
 ---
 name: expo-animations
-description: Use when implementing animations in React Native — shared values, animated styles, entering/exiting transitions, spring physics, or gesture-driven animations. Trigger on "animation", "animate", "transition", "reanimated", "spring", "fade in", "slide", or any motion/visual effect. ALWAYS use react-native-reanimated, NEVER React Native's built-in Animated API.
+description: Animations with `react-native-reanimated` — shared values, spring/timing, entering/exiting transitions, and gesture-driven animations. NEVER use React Native's built-in `Animated`.
 ---
 
 # Animations — react-native-reanimated (already in template)
@@ -41,14 +41,13 @@ function FadeBox() {
 }
 ```
 
-## Entering/Exiting animations (layout animations)
+## Entering/Exiting animations
 
 ```tsx
 <Animated.View entering={FadeIn.duration(300)} exiting={FadeOut.duration(200)}>
   <AppText>Hello</AppText>
 </Animated.View>
 
-// Slide in from right
 <Animated.View entering={SlideInRight.springify()}>
   <Card />
 </Animated.View>
@@ -76,7 +75,7 @@ const animatedStyle = useAnimatedStyle(() => ({
 }));
 ```
 
-## Gesture + Animation (with react-native-gesture-handler)
+## Gesture + Animation
 
 ```tsx
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -110,4 +109,3 @@ function SwipeCard() {
 - Use entering/exiting props for mount/unmount animations
 - Use `withSpring` for natural bouncy feel, `withTiming` for linear/eased
 - Combine with `react-native-gesture-handler` for interactive gestures
-- `expo-haptics` for touch feedback alongside animations

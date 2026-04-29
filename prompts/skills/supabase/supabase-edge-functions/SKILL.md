@@ -1,11 +1,11 @@
 ---
 name: supabase-edge-functions
-description: Use when writing Supabase Edge Functions — Deno-based serverless endpoints for webhooks, third-party API integrations, custom auth flows, server-side logic, scheduled jobs, or anything that needs the service_role key. Trigger on "edge function", "supabase functions", "Deno", "Deno.serve", "functions deploy", "functions/_shared", "service_role", "stripe webhook", "verify webhook", "cron", "scheduled function", "createClient with service role", or any server-side code that runs in Supabase's runtime.
+description: Deno-based Edge Functions for webhooks, third-party API calls, custom auth flows, and scheduled jobs.
 ---
 
 # Supabase Edge Functions
 
-Edge Functions are **Deno**-based (not Node) serverless endpoints that run on Supabase's edge. Use them for: webhooks (Stripe, Clerk, GitHub), third-party API calls that need a secret, server-side enforcement of rules RLS can't express, and scheduled jobs. Don't use them for simple data fetches — that's what RLS-protected `from('table').select()` from the client is for.
+Deno-based serverless endpoints. Use for webhooks (Stripe, Clerk, GitHub), third-party API calls needing secrets, server-side enforcement RLS can't express, and scheduled jobs.
 
 ## Project structure
 
@@ -21,16 +21,15 @@ supabase/
           └── index.ts
 ```
 
-Anything under `_shared/` is _not_ deployed as a function — files prefixed with `_` are skipped. Use it for code reused across functions.
+Files prefixed with `_` are not deployed.
 
-## Anatomy of a function — get this exactly right
+## Anatomy
 
 ```ts
 // supabase/functions/hello/index.ts
 import { corsHeaders } from '../_shared/cors.ts';
 
 Deno.serve(async (req) => {
-  // 1. Handle CORS preflight first — browsers send OPTIONS before POST.
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
@@ -59,20 +58,15 @@ export const corsHeaders = {
 };
 ```
 
-**Things that trip people up:**
+**Notes:**
+- `Deno.serve`, not `serve()` from `std/http`.
+- URL imports with explicit versions: `import { Stripe } from 'https://esm.sh/stripe@14.0.0?target=deno'`. NPM: `npm:openai@4.0.0`.
+- Handler must return `Response`. Plain objects silently fail.
+- File extensions in imports are mandatory: `'../_shared/cors.ts'`.
 
-- It's **`Deno.serve`**, not `serve()` from `std/http`. The newer Deno runtime built into Supabase exposes it globally.
-- All imports use **URL imports** with explicit versions: `import { Stripe } from 'https://esm.sh/stripe@14.0.0?target=deno'`. No `package.json`, no `node_modules`. NPM compatibility works via `npm:` specifiers in newer runtimes (`import OpenAI from 'npm:openai@4.0.0'`) — pin versions explicitly.
-- The handler must return a `Response`. Returning a plain object silently fails.
-- File extensions in imports are **mandatory**: `'../_shared/cors.ts'`, not `'../_shared/cors'`.
-
-## Two clients, very different — pick the right one
-
-The biggest, most expensive bug in edge functions: using the wrong key. Each gives you a different identity and different RLS behavior.
+## Two client types
 
 ### Identity-bound client (acts as the calling user)
-
-Forwards the user's JWT, RLS applies, you can call `auth.getUser()`:
 
 ```ts
 // _shared/supabase.ts
@@ -90,7 +84,7 @@ export function getSupabaseUserClient(req: Request) {
 }
 ```
 
-### Admin client (bypasses RLS, full database access)
+### Admin client (bypasses RLS)
 
 ```ts
 export function getSupabaseAdminClient() {
@@ -102,20 +96,16 @@ export function getSupabaseAdminClient() {
 }
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` is **automatically injected** into every edge function — you don't set it via `secrets set`. Same for `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_DB_URL`. These four are reserved.
+`SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_DB_URL` are **auto-injected** — don't `secrets set` them.
 
 **Rule of thumb:**
-
-- If the function accepts a user JWT and acts on their behalf → user client.
-- If it's a webhook (no user JWT exists) → admin client.
-- If it's both (signed-in user triggers something with elevated rights) → use user client to verify identity, then admin client for the privileged write.
+- Function accepts user JWT → user client.
+- Webhook (no user JWT) → admin client.
+- Both → user client to verify, then admin for privileged write.
 
 ```ts
-// Check identity, then escalate
 const userClient = getSupabaseUserClient(req);
-const {
-  data: { user },
-} = await userClient.auth.getUser();
+const { data: { user } } = await userClient.auth.getUser();
 if (!user) return new Response('Unauthorized', { status: 401 });
 
 const admin = getSupabaseAdminClient();
@@ -124,9 +114,7 @@ await admin.from('audit_log').insert({ user_id: user.id, action: 'X' });
 
 ## Verifying webhooks (Stripe example)
 
-Webhooks must verify signatures or you'll happily process forged events. The two correct things must both be true: **disable JWT verification** for the function (Stripe doesn't send a Supabase JWT), and **read the raw body** (verification fails on parsed JSON).
-
-Disable JWT verification in `config.toml`:
+Two non-negotiables: **disable JWT verification** AND **read the raw body** before parsing.
 
 ```toml
 [functions.stripe-webhook]
@@ -179,11 +167,11 @@ Deno.serve(async (req) => {
 });
 ```
 
-`stripe.webhooks.constructEvent` (sync version) doesn't work in Deno — it uses Node's `crypto`. Always use `constructEventAsync`. Same pattern for any signature verification (Clerk, GitHub, etc.) — read raw body, then parse only after verifying.
+Use `constructEventAsync` (sync uses Node `crypto`). Same pattern for any webhook signature.
 
-## Secrets and environment variables
+## Secrets
 
-Reserved (auto-injected, don't set yourself): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`.
+Reserved (auto-injected): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`.
 
 Custom secrets:
 
@@ -191,16 +179,16 @@ Custom secrets:
 # Local: write to supabase/.env (gitignored)
 echo 'STRIPE_SECRET_KEY=sk_test_...' >> supabase/.env
 
-# Production: push them to the deployed env
+# Production
 supabase secrets set STRIPE_SECRET_KEY=sk_live_... STRIPE_WEBHOOK_SECRET=whsec_...
-supabase secrets list   # see what's set
+supabase secrets list
 ```
 
-Read with `Deno.env.get('NAME')`. Always null-check or throw at startup — Deno doesn't have a TypeScript guarantee for env vars.
+Read with `Deno.env.get('NAME')`. Always null-check.
 
 ## Calling functions
 
-### From the Expo client
+### From Expo client
 
 ```ts
 const { data, error } = await supabase.functions.invoke('hello', {
@@ -208,19 +196,17 @@ const { data, error } = await supabase.functions.invoke('hello', {
 });
 ```
 
-`supabase.functions.invoke` automatically forwards the user's JWT in `Authorization: Bearer ...`. Inside the function, the user client picks it up and `auth.getUser()` works.
+`supabase.functions.invoke` auto-forwards the user JWT. Inside the function, `auth.getUser()` works.
 
-### From a webhook (curl / Stripe / GitHub)
+### From a webhook
 
 ```
 https://<project-ref>.supabase.co/functions/v1/stripe-webhook
 ```
 
-For local dev: `http://127.0.0.1:54321/functions/v1/stripe-webhook`. Webhook providers can't reach `localhost` — use [ngrok](https://ngrok.com) or [smee.io](https://smee.io) to tunnel during development.
+Local: `http://127.0.0.1:54321/functions/v1/stripe-webhook`. Use ngrok/smee.io for webhook tunnels in dev.
 
 ### Disabling JWT verification
-
-By default every function requires a valid Supabase JWT in the Authorization header. Webhooks need this **off**:
 
 ```toml
 [functions.stripe-webhook]
@@ -230,40 +216,35 @@ verify_jwt = false
 verify_jwt = false
 ```
 
-When `verify_jwt = false`, you have to verify identity yourself (signature check, shared secret in a header, etc.). Don't leave it off without a replacement.
+With `verify_jwt = false`, verify identity yourself (signature, shared secret).
 
 ## Local development
 
 ```bash
-supabase functions serve              # serve all functions, hot reload
+supabase functions serve              # all functions, hot reload
 supabase functions serve hello        # single function
-supabase functions serve --env-file supabase/.env hello    # explicit env file
+supabase functions serve --env-file supabase/.env hello
 ```
-
-The local runtime is the same Deno binary as production. If it works locally and breaks in prod, it's almost always: a missing secret, a missing `verify_jwt = false`, or a CORS header mismatch.
 
 ## Deploy
 
 ```bash
-# Deploy all functions
 supabase functions deploy
-
-# Or one at a time
 supabase functions deploy stripe-webhook --no-verify-jwt
 ```
 
-The `--no-verify-jwt` flag on the CLI is a one-off override; the proper place is `verify_jwt = false` in `config.toml` so it's checked into git.
+Prefer `verify_jwt = false` in `config.toml` (checked into git) over `--no-verify-jwt`.
 
 ## Scheduled functions (cron)
 
-Use `pg_cron` to invoke an edge function on a schedule. The function still runs on edge — pg_cron just triggers it via HTTP.
+Use `pg_cron` to invoke functions on a schedule:
 
 ```sql
--- Enable extensions (one-time, in a migration)
+-- One-time setup
 create extension if not exists pg_cron with schema extensions;
 create extension if not exists pg_net  with schema extensions;
 
--- Schedule a daily job at 2am UTC
+-- Daily 2am UTC
 select cron.schedule(
   'daily-cleanup',
   '0 2 * * *',
@@ -279,28 +260,37 @@ select cron.schedule(
 );
 ```
 
-Set the service role key as a database setting once: `alter database postgres set app.settings.service_role_key = '<your-service-role-key>';` (admin-only, run via migration with the service role).
+Store the service role key as a DB setting:
 
-`select cron.unschedule('daily-cleanup');` removes a job. List with `select * from cron.job;`.
+```sql
+alter database postgres set app.settings.service_role_key = '<your-service-role-key>';
+```
+
+Manage:
+
+```sql
+select cron.unschedule('daily-cleanup');
+select * from cron.job;
+```
 
 ## Hard rules
 
-- **Don't import from npm without `npm:` or esm.sh.** Bare specifiers like `import Stripe from 'stripe'` don't work — Deno has no `node_modules`.
-- **Don't `req.json()` before signature verification.** Webhook signatures cover the raw body. Always `await req.text()` first, verify, then `JSON.parse`.
-- **Don't use the wrong client.** Webhooks → admin. User actions → user client. Verify identity with user client, escalate with admin only when needed.
-- **Don't ship `verify_jwt = false` without a replacement check.** Webhook signature, IP allowlist, shared secret — pick one.
-- **Don't put `SUPABASE_SERVICE_ROLE_KEY` in client code.** It's reserved server-side. Edge functions get it auto-injected; clients never need it.
-- **Don't forget the OPTIONS handler.** Browsers will preflight. Without it, every web call from a different origin fails CORS.
-- **Don't use the synchronous Stripe APIs (`constructEvent`, etc.).** Use `*Async` versions in Deno.
-- **Don't deploy without testing locally.** `supabase functions serve` is the same runtime — if it doesn't work there, it won't work in prod.
-- **Don't forget to `supabase secrets set` for prod.** The local `supabase/.env` is dev-only. Forgetting this is the #1 prod-only failure.
+- **Don't bare-import npm packages.** Use `npm:` or `esm.sh`.
+- **Don't `req.json()` before signature verification** — `req.text()` first, verify, then parse.
+- **Don't use the wrong client.** Webhooks → admin. User → user client.
+- **Don't ship `verify_jwt = false` without a replacement check.**
+- **Don't put `SUPABASE_SERVICE_ROLE_KEY` in client code.**
+- **Don't forget the OPTIONS handler.**
+- **Don't use sync Stripe APIs** — use `*Async` in Deno.
+- **Don't deploy without testing locally.**
+- **Don't forget `supabase secrets set` for prod.**
 
-## Quick checklist for a new function
+## New function checklist
 
-1. `supabase functions new <name>` (or just create the dir + `index.ts`).
-2. Decide: identity-bound or admin client? If both, use a helper.
-3. Decide: `verify_jwt`? Webhook → false + signature check. User-facing → leave default true.
-4. Add OPTIONS handler with CORS headers.
-5. Read body the right way: `req.text()` for webhooks, `req.json()` after.
-6. Set secrets locally (`supabase/.env`) and in prod (`supabase secrets set`).
-7. Test locally with `supabase functions serve`, then `supabase functions deploy`.
+1. `supabase functions new <name>` or create dir + `index.ts`.
+2. Identity-bound or admin client?
+3. `verify_jwt`? Webhook → `false` + signature check.
+4. OPTIONS handler with CORS headers.
+5. `req.text()` for webhooks, `req.json()` otherwise.
+6. Set secrets locally (`supabase/.env`) and prod (`supabase secrets set`).
+7. Test with `supabase functions serve`, then `supabase functions deploy`.

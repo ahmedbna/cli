@@ -1,15 +1,15 @@
 ---
 name: expo-image-media
-description: Use when implementing image display, image picking, camera capture, image manipulation, or media library access in React Native/Expo. Trigger on "image", "photo", "gallery", "image picker", "expo-image", "media", "blurhash", "thumbhash", "crop", "resize", "save to camera roll", uploading images to convex or supabase storage or displaying/uploading user photos.
+description: Image display (`expo-image`), picking/capture (`expo-image-picker`), transformation (`expo-image-manipulator`), and media library (`expo-media-library`).
 ---
 
 # Expo Image & Media
 
-Four packages cover the full image lifecycle: **expo-image** (display), **expo-image-picker** (capture/select), **expo-image-manipulator** (transform), **expo-media-library** (save/query device media).
+Four packages: **expo-image** (display), **expo-image-picker** (capture/select), **expo-image-manipulator** (transform), **expo-media-library** (save/query).
 
 ## expo-image — Display
 
-Performant cross-platform image with caching, blurhash/thumbhash placeholders, and transitions. Always prefer over RN `Image`.
+Always prefer over RN `Image`.
 
 ```tsx
 import { Image } from 'expo-image';
@@ -20,22 +20,21 @@ const blurhash = 'LEHV6nWB2yk8pyoJadR*.7kCMdnj';
   source='https://example.com/photo.jpg'
   style={{ width: 200, height: 200, borderRadius: 12 }}
   contentFit='cover' // 'cover' | 'contain' | 'fill' | 'none' | 'scale-down'
-  placeholder={{ blurhash }} // or { thumbhash } or a local require()
-  placeholderContentFit='cover' // match contentFit to avoid flicker
-  transition={300} // ms cross-dissolve
+  placeholder={{ blurhash }} // or { thumbhash } or local require()
+  placeholderContentFit='cover'
+  transition={300}
   cachePolicy='memory-disk' // 'none' | 'disk' | 'memory' | 'memory-disk'
   priority='normal' // 'low' | 'normal' | 'high'
-  recyclingKey={item.id} // use in FlatList/FlashList to avoid stale frames
+  recyclingKey={item.id} // use in lists
 />;
 ```
 
-**Static methods** (call on `Image`):
-
-- `Image.prefetch(urls, { cachePolicy: 'memory-disk' })` — preload before display
+**Static methods**:
+- `Image.prefetch(urls, { cachePolicy: 'memory-disk' })`
 - `Image.clearMemoryCache()` / `Image.clearDiskCache()`
-- `Image.generateBlurhashAsync(uri, [4, 3])` — generate hash on device
+- `Image.generateBlurhashAsync(uri, [4, 3])`
 
-**SF Symbols on iOS** (use `sf:` prefix): `<Image source="sf:star.fill" tintColor="#facc15" />`
+**SF Symbols on iOS**: `<Image source="sf:star.fill" tintColor="#facc15" />`
 
 ## expo-image-picker — Pick / Capture
 
@@ -46,11 +45,9 @@ npx expo install expo-image-picker
 ```tsx
 import * as ImagePicker from 'expo-image-picker';
 
-// Hook for permissions (preferred)
 const [status, requestPermission] = ImagePicker.useMediaLibraryPermissions();
 
 const pickImage = async () => {
-  // Request before launching to avoid post-pick permission dialogs on iOS
   const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!perm.granted) return;
 
@@ -58,8 +55,8 @@ const pickImage = async () => {
     mediaTypes: ['images'], // array form; or ["images", "videos"]
     allowsEditing: true,
     aspect: [1, 1], // Android only; iOS crop is always square
-    quality: 0.8, // 0..1
-    allowsMultipleSelection: false, // set true + selectionLimit for multi
+    quality: 0.8,
+    allowsMultipleSelection: false,
   });
 
   if (!result.canceled) {
@@ -72,13 +69,11 @@ const takePhoto = async () => {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
   if (!perm.granted) return;
   const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
-  if (!result.canceled) {
-    /* result.assets[0].uri */
-  }
+  if (!result.canceled) { /* result.assets[0].uri */ }
 };
 ```
 
-**Note:** `MediaTypeOptions` is deprecated — use the string array form `["images"]`, `["videos"]`, `["livePhotos"]` (iOS).
+`MediaTypeOptions` is deprecated — use string arrays `["images"]`, `["videos"]`, `["livePhotos"]`.
 
 ## expo-image-manipulator — Transform
 
@@ -99,7 +94,7 @@ const context = useImageManipulator(uri);
 
 const transform = async () => {
   context
-    .resize({ width: 800 }) // height auto from aspect ratio
+    .resize({ width: 800 })
     .rotate(90)
     .flip(FlipType.Vertical)
     .crop({ originX: 0, originY: 0, width: 400, height: 400 });
@@ -125,17 +120,15 @@ import * as MediaLibrary from 'expo-media-library';
 
 const [perm, requestPerm] = MediaLibrary.usePermissions();
 
-// Quick save (no asset returned)
 await MediaLibrary.saveToLibraryAsync(localUri);
 
-// Save and get asset back, optionally into an album
 const asset = await MediaLibrary.createAssetAsync(localUri);
 const album = await MediaLibrary.getAlbumAsync('MyApp');
 if (album) await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
 else await MediaLibrary.createAlbumAsync('MyApp', asset, false);
 ```
 
-## app.json — Permissions Plugin Config
+## app.json — Permissions plugin config
 
 ```json
 {
@@ -164,10 +157,6 @@ else await MediaLibrary.createAlbumAsync('MyApp', asset, false);
 
 ## Upload to Convex Storage
 
-Three steps: (1) call a mutation that returns an upload URL, (2) `POST` the file bytes to it and read back the `storageId`, (3) call your own mutation to persist that `storageId` on a row.
-
-**Convex side** — define both mutations yourself:
-
 ```ts
 // convex/files.ts
 import { mutation } from './_generated/server';
@@ -177,7 +166,6 @@ export const generateUploadUrl = mutation(async (ctx) => {
   return await ctx.storage.generateUploadUrl();
 });
 
-// Persist the storageId however your schema expects.
 export const saveImage = mutation({
   args: { storageId: v.id('_storage') },
   handler: async (ctx, { storageId }) => {
@@ -185,8 +173,6 @@ export const saveImage = mutation({
   },
 });
 ```
-
-**Client side**:
 
 ```tsx
 import * as ImagePicker from 'expo-image-picker';
@@ -205,8 +191,6 @@ function UploadButton() {
     if (result.canceled) return;
     const asset = result.assets[0];
 
-    // RN's fetch(uri).blob() works for the body, but blob.type is often empty —
-    // use the picker's mimeType for the Content-Type header.
     const blob = await (await fetch(asset.uri)).blob();
     const contentType = asset.mimeType ?? 'image/jpeg';
 
@@ -225,11 +209,9 @@ function UploadButton() {
 }
 ```
 
-To display later, expose a query that returns `await ctx.storage.getUrl(storageId)` and pass that URL to `<Image source={url} />`.
-
 ## Upload to Supabase Storage
 
-Per Supabase's own docs: _"For React Native, using either Blob, File or FormData does not work as intended. Upload file using ArrayBuffer from base64 file data instead."_ The pattern is **read the file as base64 → decode to ArrayBuffer → upload**.
+Per Supabase: For React Native, use **ArrayBuffer** from base64 (Blob/File/FormData don't work).
 
 ```bash
 npx expo install expo-file-system base64-arraybuffer
@@ -249,20 +231,20 @@ async function uploadImage(userId: string) {
   if (result.canceled) return;
   const asset = result.assets[0];
 
-  // SDK 54+ File API. The legacy FileSystem.readAsStringAsync throws at runtime.
+  // SDK 54+ File API. Legacy FileSystem.readAsStringAsync throws.
   const base64 = await new File(asset.uri).base64();
   const arrayBuffer = decode(base64);
 
   const contentType = asset.mimeType ?? 'image/jpeg';
   const ext = contentType.split('/')[1] ?? 'jpg';
 
-  // Avatar: deterministic path + upsert (replaces in place, no graveyard)
+  // Avatar: deterministic path + upsert
   const path = `${userId}/avatar.${ext}`;
   const { data, error } = await supabase.storage
     .from('avatars')
     .upload(path, arrayBuffer, { contentType, upsert: true });
 
-  // Gallery alternative: unique path, no upsert
+  // Gallery alternative:
   // const path = `${userId}/${Date.now()}.${ext}`;
   // .upload(path, arrayBuffer, { contentType });
 
@@ -273,41 +255,41 @@ async function uploadImage(userId: string) {
 
 ### Displaying uploaded files
 
-**Public bucket** — get a permanent URL:
+**Public bucket**:
 
 ```ts
 const { data } = supabase.storage.from('avatars').getPublicUrl(path);
 <Image source={data.publicUrl} />;
 ```
 
-**Private bucket** — must download and convert (RN can't fetch private URLs with auth headers in `<Image>`):
+**Private bucket** — signed URL (preferred):
+
+```ts
+const { data } = await supabase.storage
+  .from('files')
+  .createSignedUrl(path, 3600);
+<Image source={data!.signedUrl} />;
+```
+
+Or download + convert:
 
 ```ts
 const { data: blob } = await supabase.storage.from('files').download(path);
 const reader = new FileReader();
 reader.readAsDataURL(blob!);
-reader.onload = () => setUri(reader.result as string); // 'data:image/...;base64,...'
-```
-
-For private buckets at scale, prefer a **signed URL** instead of round-tripping bytes:
-
-```ts
-const { data } = await supabase.storage
-  .from('files')
-  .createSignedUrl(path, 3600); // valid 1 hour
-<Image source={data!.signedUrl} />;
+reader.onload = () => setUri(reader.result as string);
 ```
 
 ## Rules
 
-- Always use `expo-image` over RN `Image`. Set `contentFit` explicitly; default is `'cover'`.
-- Use `placeholder` (blurhash/thumbhash) + `transition` to avoid flicker on remote images.
-- Set `recyclingKey` in any list (FlatList/FlashList) to prevent stale image frames.
-- Picker/manipulator/media-library all require a native rebuild after install.
-- Request permissions **before** launching the picker on iOS — especially for videos — to avoid surprise system dialogs.
-- Prefer `useImageManipulator` + `renderAsync().saveAsync()` over the deprecated `manipulateAsync`.
-- Use the array form `mediaTypes: ['images']`; `MediaTypeOptions` is deprecated.
+- Always use `expo-image` over RN `Image`. Set `contentFit` explicitly.
+- Use `placeholder` (blurhash/thumbhash) + `transition` to avoid flicker.
+- Set `recyclingKey` in lists.
+- Picker/manipulator/media-library require native rebuild after install.
+- Request permissions **before** launching the picker on iOS.
+- Use `useImageManipulator` over deprecated `manipulateAsync`.
+- Use `mediaTypes: ['images']` (array form).
 - Always check `result.canceled` before reading `result.assets`.
-- For upload `Content-Type` headers, use `asset.mimeType` from the picker — `blob.type` from `fetch(uri).blob()` is often empty in React Native.
-- **Supabase from RN:** upload an **ArrayBuffer**, not a Blob (Blob uploads silently produce 0-byte files). Use the SDK 54 `File` class — the legacy `FileSystem.readAsStringAsync` is deprecated and throws at runtime. Public buckets → `getPublicUrl`. Private buckets → signed URL (preferred) or `download()` + `FileReader.readAsDataURL`.
-- **Convex from RN:** a Blob body works fine; just supply an explicit `Content-Type`. You must define both `generateUploadUrl` and your own row-persisting mutation in `convex/`.
+- Use `asset.mimeType` for `Content-Type` (blob.type is often empty in RN).
+- **Supabase RN:** ArrayBuffer not Blob. SDK 54 `File` class. Public → `getPublicUrl`. Private → signed URL.
+- **Convex RN:** Blob body works; supply explicit `Content-Type`.

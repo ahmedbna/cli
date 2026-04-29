@@ -1,25 +1,21 @@
 ---
 name: convex-environment-variables
-description: Use when reading API keys, secrets, configuration, or any environment variable in Convex backend functions, or when setting/managing environment variables across dev and prod deployments. Trigger on "process.env", "API key", "secret", "env var", "environment variable", "OPENAI_API_KEY", "STRIPE_SECRET", "convex env", "deployment config", or any external service credential.
+description: Read and manage Convex backend env vars (API keys, secrets) per-deployment via `process.env.NAME` and the `convex env` CLI.
 ---
 
 # Convex Environment Variables
 
-Convex env vars are **per-deployment** (each dev, preview, and prod deployment has its own set) and are read inside functions via `process.env.NAME`.
+Per-deployment env vars (each dev/preview/prod has its own set). Read inside functions via `process.env.NAME`.
 
 ## Setting env vars
 
-### CLI (recommended for scripted setup)
-
 ```bash
-npx convex env list                      # list all
-npx convex env get OPENAI_API_KEY        # read one
-npx convex env set OPENAI_API_KEY 'sk-…' # write one
-npx convex env set --from-file .env.convex   # bulk import
-npx convex env remove OPENAI_API_KEY     # delete
+npx convex env list                          # list all
+npx convex env get OPENAI_API_KEY            # read one
+npx convex env set OPENAI_API_KEY 'sk-…'     # write one
+npx convex env set --from-file .env.convex   # bulk import (KEY=value)
+npx convex env remove OPENAI_API_KEY         # delete
 ```
-
-The `--from-file` flag reads a standard `KEY=value` file — the easiest way to bootstrap a fresh deployment.
 
 ## Reading env vars in functions
 
@@ -39,32 +35,31 @@ export const callGiphy = action({
 });
 ```
 
-`process.env.NAME` returns a `string` if set, `undefined` otherwise. **Always null-check** — TypeScript can't enforce it, and a missing env var is a common cause of silent prod breakage.
+`process.env.NAME` returns `string` if set, `undefined` otherwise. **Always null-check.**
 
-`process.env` works in queries, mutations, actions (default and `"use node"` runtime), HTTP actions, and crons.
+Works in queries, mutations, actions (default and `"use node"`), HTTP actions, and crons.
 
-## Per-deployment values — same key, different value
+## Per-deployment values
 
-Because env vars live per-deployment, you typically want the **same name with different values** in dev vs prod:
+Set the same key with different values in dev vs prod:
 
-| Deployment | `STRIPE_SECRET_KEY` |
-| ---------- | ------------------- |
-| dev        | `sk_test_…`         |
-| preview    | `sk_test_…`         |
-| prod       | `sk_live_…`         |
+```bash
+npx convex env set STRIPE_SECRET_KEY 'sk_test_…'           # dev
+npx convex env set --prod STRIPE_SECRET_KEY 'sk_live_…'    # prod
+```
 
-Set each one individually (`npx convex env set …` runs against the currently selected deployment — switch with `--prod` or `npx convex deploy`). If a function reads `process.env.X`, **set X in every deployment that runs that function** — otherwise it'll be `undefined` in whichever deployment you forgot.
+If a function reads `process.env.X`, set X in **every** deployment that runs it.
 
-## System env vars (always set, no config needed)
+## System env vars (always set)
 
-| Variable           | Value                                                                           |
-| ------------------ | ------------------------------------------------------------------------------- |
-| `CONVEX_CLOUD_URL` | e.g. `https://<your deployment name>.convex.cloud` — for Convex clients         |
-| `CONVEX_SITE_URL`  | e.g. `https://<your deployment name>.convex.site` — for HTTP Actions / webhooks |
+| Variable           | Value                                                     |
+| ------------------ | --------------------------------------------------------- |
+| `CONVEX_CLOUD_URL` | `https://<deployment>.convex.cloud` — for Convex clients  |
+| `CONVEX_SITE_URL`  | `https://<deployment>.convex.site` — for HTTP Actions     |
 
-Use `CONVEX_SITE_URL` when registering webhook callbacks with third parties (Stripe, Clerk, etc.) so the URL automatically tracks the deployment.
+Use `CONVEX_SITE_URL` when registering webhook callbacks with third parties.
 
-## Hard rules — these break in subtle ways
+## Hard rules
 
 ### Don't condition function exports on env vars
 
@@ -75,16 +70,12 @@ export const myFunc = process.env.DEBUG
   : internalMutation(handler);
 ```
 
-The set of callable Convex functions is locked in at deploy. Changing `DEBUG` afterward won't change which export wins — it'll throw at runtime.
-
 Branch **inside** the handler instead:
 
 ```ts
 export const myFunc = mutation({
   handler: async (ctx) => {
-    if (process.env.DEBUG) {
-      /* dev-only path */
-    }
+    if (process.env.DEBUG) { /* dev-only path */ }
     /* normal path */
   },
 });
@@ -92,16 +83,16 @@ export const myFunc = mutation({
 
 ### Don't use env vars in cron schedule definitions
 
-Cron schedules are also fixed at deploy. Reading `process.env` to _decide_ a cron interval won't be re-evaluated when the env var changes.
+Cron schedules are fixed at deploy.
 
 ### Don't bake env vars into module-level constants
 
 ```ts
-// Risky — captures undefined at import time if the var isn't set yet
+// Risky — captures undefined at import time if the var isn't set
 const KEY = process.env.OPENAI_API_KEY!;
 ```
 
-Read inside the handler so a missing-var bug surfaces with a clear error per call, not a cryptic startup failure.
+Read inside the handler.
 
 ## Limits
 
@@ -114,11 +105,11 @@ Read inside the handler so a missing-var bug surfaces with a clear error per cal
 
 ## Frontend env vars are different
 
-Variables that need to reach the **browser** (e.g. `VITE_CONVEX_URL`, `EXPO_PUBLIC_CONVEX_URL`) live in your frontend build tool's env files (`.env.local`, etc.), **not** in `npx convex env`. The Convex env var store is server-side only.
+Browser-bound vars (e.g. `EXPO_PUBLIC_CONVEX_URL`) live in your frontend's `.env.local`, **not** `npx convex env`. The Convex env var store is server-side only.
 
-## Quick checklist when adding a new secret
+## Adding a new secret — checklist
 
 1. `npx convex env set NEW_KEY 'value'` for dev.
 2. `npx convex env set --prod NEW_KEY 'prod-value'` for prod.
-3. Read it inside the handler: `const v = process.env.NEW_KEY; if (!v) throw new Error("NEW_KEY missing")`.
-4. If new teammates will create their own dev deployments, add it to **Project Settings → Default Environment Variables** so their fresh deployments get a sensible default.
+3. Read inside the handler with a null-check.
+4. For team dev deployments, add to **Project Settings → Default Environment Variables**.

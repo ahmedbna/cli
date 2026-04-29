@@ -1,11 +1,9 @@
 ---
 name: convex-http-actions
-description: Use when implementing HTTP endpoints, webhooks, or REST routes in Convex. Trigger on "webhook", "HTTP endpoint", "REST API", "http action", "API route", or any server-side HTTP handler that external services call.
+description: Define HTTP endpoints in Convex for webhooks, REST routes, and external integrations. Routes live at `.convex.site` (not `.cloud`).
 ---
 
 # Convex HTTP Actions
-
-HTTP actions let you define HTTP endpoints on your Convex deployment. They're useful for webhooks, REST APIs, and any case where an external service (or your own client) needs to hit a URL rather than use the Convex client SDK.
 
 Use `convex/http.ts` (already exists in the template — extend it, don't replace).
 
@@ -42,22 +40,14 @@ http.route({
   }),
 });
 
-http.route({
-  path: '/api/health',
-  method: 'GET',
-  handler: httpAction(async () => {
-    return Response.json({ status: 'ok' });
-  }),
-});
-
 export default http;
 ```
 
-## Where HTTP actions are exposed
+## Where HTTP actions live
 
-HTTP actions live at `https://<your deployment name>.convex.site` (note `.site`, **not** `.cloud`).
+HTTP actions live at `https://<deployment>.convex.site` (note `.site`, **not** `.cloud`).
 
-The standard `EXPO_PUBLIC_CONVEX_URL` env var points at the `.cloud` domain used by the Convex client SDK. To call HTTP actions from the browser, derive the `.site` URL from it:
+To call from a browser, derive the `.site` URL from `EXPO_PUBLIC_CONVEX_URL`:
 
 ```ts
 const convexDeploymentUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
@@ -66,128 +56,47 @@ const convexSiteUrl = convexDeploymentUrl.endsWith('.cloud')
   : convexDeploymentUrl;
 ```
 
-## Calling HTTP actions
-
-### From `curl` (external services, webhooks, testing)
+## Calling from curl
 
 ```bash
-# POST
 curl -d '{ "author": "User 123", "body": "Hello world" }' \
   -H 'content-type: application/json' \
-  https://<your deployment name>.convex.site/postMessage
+  https://<deployment>.convex.site/postMessage
 
-# GET with query params
-curl https://<your deployment name>.convex.site/getMessagesByAuthor?authorNumber=123
+curl https://<deployment>.convex.site/getMessagesByAuthor?authorNumber=123
 ```
 
-### From Expo React Native client
+## Calling from React Native
 
 ```tsx
-import { useMemo, useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  FlatList,
-  StyleSheet,
-} from 'react-native';
-import { useQuery, useMutation } from 'convex/react';
-import { api } from '../convex/_generated/api';
+import { useMemo } from 'react';
 
-export default function ChatScreen() {
-  const messages = useQuery(api.messages.list) ?? [];
-  const sendMessage = useMutation(api.messages.send);
-  const [newMessageText, setNewMessageText] = useState('');
-  const [name] = useState(() => 'User ' + Math.floor(Math.random() * 10000));
+const convexSiteUrl = useMemo(() => {
+  const deploymentUrl = process.env.EXPO_PUBLIC_CONVEX_URL ?? '';
+  return deploymentUrl.endsWith('.cloud')
+    ? deploymentUrl.slice(0, -'.cloud'.length) + '.site'
+    : deploymentUrl;
+}, []);
 
-  // Derive the .site URL for HTTP actions from the SDK's .cloud URL
-  const convexSiteUrl = useMemo(() => {
-    const deploymentUrl = process.env.EXPO_PUBLIC_CONVEX_URL ?? '';
-    return deploymentUrl.endsWith('.cloud')
-      ? deploymentUrl.slice(0, -'.cloud'.length) + '.site'
-      : deploymentUrl;
-  }, []);
-
-  // Send via the typed Convex client (preferred for in-app traffic)
-  async function handleSend() {
-    if (!newMessageText.trim()) return;
-    await sendMessage({ body: newMessageText, author: name });
-    setNewMessageText('');
-  }
-
-  // Same write, but going through an HTTP action — useful from non-Convex
-  // contexts (background tasks, share extensions, server code, etc.)
-  async function postViaHttp() {
-    await fetch(`${convexSiteUrl}/postMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ author: name, body: newMessageText }),
-    });
-  }
-
-  return (
-    <View>
-      <Text>Convex Chat</Text>
-      <Text>{name}</Text>
-
-      <FlatList
-        data={messages}
-        keyExtractor={(m) => m._id}
-        renderItem={({ item }) => (
-          <View>
-            <Text>{item.author}</Text>
-            <Text>{item.body}</Text>
-            <Text>{new Date(item._creationTime).toLocaleTimeString()}</Text>
-          </View>
-        )}
-        contentContainerStyle={{ paddingVertical: 8 }}
-      />
-
-      <View>
-        <TextInput
-          value={newMessageText}
-          onChangeText={setNewMessageText}
-          placeholder='Write a message…'
-          returnKeyType='send'
-          onSubmitEditing={handleSend}
-        />
-        <Pressable
-          onPress={handleSend}
-          disabled={!newMessageText.trim()}
-          style={({ pressed }) => [
-            (!newMessageText.trim() || pressed) && { opacity: 0.5 },
-          ]}
-        >
-          <Text>Send</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
+await fetch(`${convexSiteUrl}/postMessage`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ author: name, body: text }),
+});
 ```
 
-> Important: in React Native the only way to reach an HTTP action is `fetch` (or a library like `axios`). There is no `<form>`, no `event.target.value`, no DOM. Use `TextInput`'s `onChangeText` (not `onChange`), and trigger requests from `onPress` / `onSubmitEditing` handlers.
+In RN, the only way to reach an HTTP action is `fetch`. Use `TextInput`'s `onChangeText` and trigger from `onPress`/`onSubmitEditing`.
 
 ### When to use which
 
-- **Convex client SDK (`useQuery` / `useMutation`)** — preferred for in-app data flow inside your Expo React Native app. Reactive, typed, auth-integrated.
-- **HTTP actions + `fetch`** — required for webhooks (Stripe, Clerk, GitHub, etc.), third-party integrations, public REST APIs, non-JS clients, or RN contexts where the Convex provider isn't mounted (background tasks, push-notification handlers, share extensions).
+- **Convex client SDK** — preferred for in-app data. Reactive, typed, auth-integrated.
+- **HTTP actions + `fetch`** — required for webhooks (Stripe, Clerk, GitHub), public REST APIs, non-JS clients, or RN contexts where the Convex provider isn't mounted (background tasks, push handlers, share extensions).
 
 ## CORS
 
-When the route is called from a browser on a different origin (e.g. a marketing site, a Stripe-hosted checkout return page) you must set CORS headers yourself — Convex does not add them. Add `Access-Control-Allow-Origin` to every response **and** handle the preflight `OPTIONS` request as a separate route.
-
-Pin the allowed origin via an env var (set with `npx convex env set CLIENT_ORIGIN https://mysite.com`) so dev and prod can differ:
+For browser-origin callers, set headers yourself and handle the `OPTIONS` preflight. Pin allowed origin via env var:
 
 ```ts
-// convex/http.ts
-import { httpRouter } from 'convex/server';
-import { httpAction } from './_generated/server';
-import { api } from './_generated/api';
-
-const http = httpRouter();
-
 http.route({
   path: '/sendImage',
   method: 'POST',
@@ -196,9 +105,7 @@ http.route({
     const storageId = await ctx.storage.store(blob);
 
     const author = new URL(request.url).searchParams.get('author');
-    if (author === null) {
-      return new Response('Author is required', { status: 400 });
-    }
+    if (!author) return new Response('Author is required', { status: 400 });
 
     await ctx.runMutation(api.messages.sendImage, { storageId, author });
 
@@ -212,7 +119,6 @@ http.route({
   }),
 });
 
-// Preflight (browsers send this before any non-simple request)
 http.route({
   path: '/sendImage',
   method: 'OPTIONS',
@@ -235,22 +141,16 @@ http.route({
     return new Response();
   }),
 });
-
-export default http;
 ```
 
 CORS notes:
-
-- One `OPTIONS` route per `path` you want to expose. Mirror the methods/headers you actually accept.
-- Always include `Vary: origin` on real responses so caches don't serve the wrong origin's reply.
-- The Expo React Native client does not need CORS — RN's `fetch` is not subject to the browser same-origin policy. CORS only matters for browser callers.
-- Webhooks (Stripe, GitHub, etc.) are server-to-server, also no CORS needed.
+- One `OPTIONS` route per `path`. Mirror methods/headers you accept.
+- Always include `Vary: origin` so caches don't serve the wrong reply.
+- React Native `fetch` is not subject to CORS. Webhooks (server-to-server) also don't need it.
 
 ## Authentication
 
-HTTP actions can read the calling user's identity through Convex's built-in auth, just like queries/mutations. The caller must pass a JWT in the `Authorization: Bearer <token>` header — Convex parses it, and `ctx.auth.getUserIdentity()` returns `null` for unauthenticated requests or the identity object otherwise.
-
-In the route:
+Caller passes JWT in `Authorization: Bearer <token>`. Read with `ctx.auth.getUserIdentity()`:
 
 ```ts
 http.route({
@@ -261,13 +161,12 @@ http.route({
     if (identity === null) {
       return new Response('Unauthorized', { status: 401 });
     }
-    // identity.subject, identity.email, identity.tokenIdentifier, …
     return Response.json({ userId: identity.subject });
   }),
 });
 ```
 
-From an Expo React Native client, grab the JWT from your auth provider (e.g. `useAuthToken()` from `@convex-dev/auth/react`) and forward it:
+From RN, grab the JWT and forward it:
 
 ```ts
 import { useAuthToken } from '@convex-dev/auth/react';
@@ -284,16 +183,13 @@ await fetch(`${convexSiteUrl}/myAction`, {
 });
 ```
 
-When CORS is also in play, add `Authorization` to `Access-Control-Allow-Headers` in the matching `OPTIONS` route.
+When CORS is in play, add `Authorization` to `Access-Control-Allow-Headers` in `OPTIONS`.
 
 ## Rules
 
-- DON'T remove `import { auth } from './auth'` or `auth.addHttpRoutes(http)` from the existing `convex/http.ts` — add new routes below them.
-- HTTP actions use `httpAction`, not `action`.
-- No `ctx.db` inside `httpAction` — use `ctx.runQuery`, `ctx.runMutation`, `ctx.runAction`.
-- Access the request via the standard Web Request API: `req.json()`, `req.text()`, `req.headers`, `req.url`. For query params, parse with `new URL(req.url).searchParams`.
-- Return a standard `Response` (e.g. `Response.json(...)`, `new Response(...)`).
-- For browser-origin callers, see the CORS section above (preflight + headers). RN clients and webhooks don't need CORS.
-- For authenticated callers, forward the JWT via `Authorization: Bearer <token>` and read it with `ctx.auth.getUserIdentity()`.
-- Remember the host split: `.cloud` for the client SDK, `.site` for HTTP actions.
-- The template already has `convex/http.ts` — add routes to it, don't overwrite the auth routes.
+- DON'T remove `import { auth } from './auth'` or `auth.addHttpRoutes(http)` from existing `convex/http.ts` — add new routes below.
+- Use `httpAction`, not `action`.
+- No `ctx.db` — use `ctx.runQuery`, `ctx.runMutation`, `ctx.runAction`.
+- Standard Web Request API: `req.json()`, `req.text()`, `req.headers`, `new URL(req.url).searchParams`.
+- Return a standard `Response` (`Response.json(...)`, `new Response(...)`).
+- Host split: `.cloud` for the SDK, `.site` for HTTP actions.

@@ -1,11 +1,11 @@
 ---
 name: convex-pagination
-description: Use when implementing paginated queries, infinite scroll, load-more patterns, or fetching all rows of a large table from Convex. Trigger on "pagination", "paginate", "infinite scroll", "load more", "usePaginatedQuery", "FlatList pagination", "cursor", or any query returning results in pages.
+description: Cursor-based reactive pagination with `paginate()` and `usePaginatedQuery` for infinite scroll and load-more patterns.
 ---
 
 # Convex Pagination
 
-Cursor-based, fully reactive pagination. The backend returns a `{ page, isDone, continueCursor }` shape; on the client, `usePaginatedQuery` manages cursors for you.
+Cursor-based, fully reactive. Backend returns `{ page, isDone, continueCursor }`; client uses `usePaginatedQuery`.
 
 ## Backend — paginated query
 
@@ -22,11 +22,9 @@ export const list = query({
 });
 ```
 
-`paginationOptsValidator` validates the `{ numItems, cursor, ... }` arg the client sends — don't hand-roll it.
+`paginationOptsValidator` validates the `{ numItems, cursor, ... }` arg — don't hand-roll it.
 
 ### With extra arguments
-
-The query can take any other args alongside `paginationOpts`:
 
 ```ts
 export const listByAuthor = query({
@@ -42,7 +40,7 @@ export const listByAuthor = query({
 
 ### Transforming the page
 
-Map/filter the `page` array but keep `isDone` and `continueCursor` intact:
+Map/filter `page` but keep `isDone` and `continueCursor` intact:
 
 ```ts
 const results = await ctx.db.query('messages').paginate(paginationOpts);
@@ -54,7 +52,7 @@ return {
 
 ### Capping page reads
 
-To bound work per page, set `maximumBytesRead` and/or `maximumRowsRead` in the page options. If a page would exceed them, Convex returns a status that tells the client to split the page — no code change needed on the client.
+Set `maximumBytesRead` and/or `maximumRowsRead` in page options to bound work per page.
 
 ## Frontend — `usePaginatedQuery`
 
@@ -96,11 +94,9 @@ function MessageList() {
 
 ## Reactivity caveat — page sizes can change
 
-Paginated queries are **fully reactive**: if a row in any already-loaded page is inserted, deleted, or modified, that page rerenders. Consequence: **a page you requested with 20 items may end up with 19 (deletion) or 21 (insertion).** Don't write UI logic that assumes page sizes stay constant.
+Paginated queries are reactive: a page requested with 20 items may end up with 19 (deletion) or 21 (insertion). **Don't write UI logic that assumes constant page sizes.**
 
 ## Paginating manually (no React)
-
-For scripts, server jobs, or exporting the full table — loop over pages until `isDone`:
 
 ```ts
 import { ConvexHttpClient } from 'convex/browser';
@@ -127,8 +123,7 @@ async function getAll() {
 
 ## Rules
 
-- `.paginate(paginationOpts)` is a **terminal** call — don't chain `.collect()` / `.take()` / `.first()` after it.
-- `.withIndex()`, `.withSearchIndex()`, `.filter()`, and `.order()` all go **before** `.paginate()`.
-- Always use `paginationOptsValidator` for the arg — it handles the cursor protocol.
-- Pass other args via the second arg to `usePaginatedQuery` — **don't** include `paginationOpts` there; the hook injects it.
-- Use `loadMore` on `onEndReached` for infinite scroll, or behind a "Load More" button.
+- `.paginate()` is **terminal** — don't chain `.collect()`/`.take()`/`.first()` after it.
+- `.withIndex()`, `.withSearchIndex()`, `.filter()`, `.order()` go **before** `.paginate()`.
+- Always use `paginationOptsValidator`.
+- Pass other args via the second arg to `usePaginatedQuery` — **don't** include `paginationOpts`; the hook injects it.

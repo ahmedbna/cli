@@ -1,32 +1,23 @@
 ---
 name: expo-video
-description: Reference and usage guide for `expo-video`, the cross-platform Expo library for video playback in React Native. Use this skill whenever the user wants to play, control, preload, cache, or stream video in an Expo / React Native app — including phrases like "video player", "play a video", "VideoView", "useVideoPlayer", "expo-video", "HLS", "DASH", "DRM", "Picture in Picture", "background playback", "fullscreen video", "subtitle track", "video thumbnail", "AirPlay", or migrating from the deprecated `expo-av` Video API. Also use this whenever the user is working with `.mp4`, `.m3u8`, livestreams, or media-library video assets in an Expo app.
+description: Video playback with `expo-video` — `<VideoView>` + `useVideoPlayer`, HLS/DASH, DRM, PiP, AirPlay, caching, and tracks.
 ---
 
 # Expo Video (`expo-video`)
 
-`expo-video` is the modern, cross-platform video component for Expo and React Native. It supersedes the older `expo-av` Video component and works on Android, iOS, tvOS, and Web (and is included in Expo Go).
+Modern video component. Two parts:
+- **`<VideoView>`** — display component.
+- **`VideoPlayer`** — native object owning playback state. Create with `useVideoPlayer(...)`.
 
-The API has two parts that work together:
-
-- **`<VideoView>`** — the React component that displays video on screen.
-- **`VideoPlayer`** — a native object that owns playback state. You create one with `useVideoPlayer(...)` and pass it to `<VideoView player={...} />`.
-
-This separation is intentional: one player can drive multiple views, survive remounts, and preload a video before any view is mounted.
-
-Use this skill any time the user is working with `expo-video`.
-
-## Installation
+## Install
 
 ```sh
 npx expo install expo-video
 ```
 
-For bare React Native apps, install `expo` and configure Expo Modules first.
+## Config plugin (build-time)
 
-## Config plugin (build-time setup)
-
-For features that require native config (background playback, Picture-in-Picture), add the config plugin to `app.json`:
+For background playback / Picture-in-Picture, add to `app.json`:
 
 ```json
 {
@@ -44,11 +35,9 @@ For features that require native config (background playback, Picture-in-Picture
 }
 ```
 
-These options take effect only after a new build (CNG / EAS Build) — they cannot be toggled at runtime. If the user is on Expo Go and only needs PiP/background playback during a development build, mention this. See `references/configuration.md` for what each flag changes in `Info.plist` and `AndroidManifest.xml`.
+Requires a new build (CNG/EAS Build) — cannot toggle at runtime.
 
-## The minimal example
-
-This is the canonical "play / pause" pattern. Recommend it as the starting point for almost every use case:
+## Minimal example
 
 ```tsx
 import { useEvent } from 'expo';
@@ -90,19 +79,14 @@ const styles = StyleSheet.create({
 });
 ```
 
-Three things to internalize from this:
-
-1. **`useVideoPlayer(source, setup?)`** creates and owns the player. The optional `setup` callback runs once after creation — use it for initial config (`loop`, `volume`, `currentTime`, autoplay).
-2. **Player property changes do NOT trigger React re-renders.** Setting `player.muted = true` mutates native state but doesn't re-render. To reflect player state in UI, subscribe to events (next section).
-3. **`<VideoView>` is mostly a presentation layer.** It handles display, fullscreen, PiP, and the native controls UI — but playback state lives on the player.
+Key points:
+1. `useVideoPlayer(source, setup?)` creates the player. `setup` runs once.
+2. **Player property changes do NOT trigger React re-renders.** Subscribe to events.
+3. `<VideoView>` is presentation. Playback state lives on the player.
 
 ## Reacting to player state — events
 
-Because `VideoPlayer` properties don't update React state on their own, you must listen for events. Three patterns, in order of preference:
-
 ### `useEvent` — for values you want to render
-
-Returns a stateful value that triggers re-renders. Best when the value drives the UI directly.
 
 ```tsx
 import { useEvent } from 'expo';
@@ -115,11 +99,9 @@ const { isPlaying } = useEvent(player, 'playingChange', {
 });
 ```
 
-The third argument is the **initial value** before the first event arrives — usually pass the player's current property so the first render has correct data.
+Third arg is the **initial value** before the first event arrives.
 
 ### `useEventListener` — for side effects
-
-Best when the event triggers a side effect (logging, analytics, navigation) rather than UI.
 
 ```tsx
 import { useEventListener } from 'expo';
@@ -131,8 +113,6 @@ useEventListener(player, 'statusChange', ({ status, error }) => {
 
 ### `player.addListener` — manual control
 
-Use only when the hook patterns don't fit (subscribing outside a component, conditional subscriptions). You're responsible for cleanup.
-
 ```tsx
 useEffect(() => {
   const sub = player.addListener('playToEnd', () => navigation.goBack());
@@ -140,25 +120,35 @@ useEffect(() => {
 }, []);
 ```
 
-For the full event list and payload shapes, see `references/events.md`.
+### Event list
+
+| Event                          | Payload                                                              |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `playingChange`                | `{ isPlaying, oldIsPlaying? }`                                       |
+| `statusChange`                 | `{ status, oldStatus?, error? }` — `'idle'\|'loading'\|'readyToPlay'\|'error'` |
+| `mutedChange`                  | `{ muted, oldMuted? }`                                               |
+| `volumeChange`                 | `{ volume, oldVolume? }`                                             |
+| `playbackRateChange`           | `{ playbackRate, oldPlaybackRate? }`                                 |
+| `sourceChange`                 | `{ source, oldSource? }` — fires on `replace`/`replaceAsync`         |
+| `sourceLoad`                   | `{ videoSource, duration, availableAudioTracks, availableSubtitleTracks, availableVideoTracks }` |
+| `playToEnd`                    | (no payload) fires before loop restart                               |
+| `timeUpdate`                   | `{ currentTime, bufferedPosition, currentLiveTimestamp, currentOffsetFromLive }` — only if `timeUpdateEventInterval > 0` |
+| `audioTrackChange`             | `{ audioTrack, oldAudioTrack? }`                                     |
+| `availableAudioTracksChange`   |                                                                      |
+| `subtitleTrackChange`          | `{ subtitleTrack, oldSubtitleTrack? }`                               |
+| `availableSubtitleTracksChange`|                                                                      |
+| `videoTrackChange`             | `{ videoTrack, oldVideoTrack? }`                                     |
+| `isExternalPlaybackActiveChange` | iOS — AirPlay start/stop                                            |
 
 ## Video sources
 
 A `VideoSource` can be:
-
-- A **string URI** — `'https://.../video.mp4'`, `'https://.../stream.m3u8'`, or a `PHAsset` URI on iOS.
-- A **local asset** via `require('./video.mp4')`.
-- An **object** (`VideoSourceObject`) — needed for headers, DRM, caching, metadata, or content-type overrides.
-- `null` — creates an empty player you can fill later via `replace()` / `replaceAsync()`.
+- **String URI** — `'https://.../video.mp4'`, `'https://.../stream.m3u8'`, `PHAsset` URI on iOS.
+- **Local asset** via `require('./video.mp4')`.
+- **Object** (`VideoSourceObject`) — for headers, DRM, caching, metadata.
+- **`null`** — empty player; fill later via `replaceAsync()`.
 
 ```tsx
-// String URI
-useVideoPlayer('https://example.com/video.mp4');
-
-// Local require()
-useVideoPlayer(require('./assets/intro.mp4'));
-
-// Full object
 useVideoPlayer({
   uri: 'https://example.com/stream.m3u8',
   contentType: 'hls',
@@ -168,58 +158,223 @@ useVideoPlayer({
 });
 ```
 
-For HLS, DASH, smooth streaming, DRM, headers, caching, and `PHAsset` quirks, see `references/sources-and-streaming.md`.
+### `VideoSourceObject` shape
+
+```ts
+{
+  uri?: string;             // Mutually exclusive with assetId. uri wins.
+  assetId?: number;         // From require('./video.mp4')
+  contentType?: ContentType;
+  headers?: Record<string, string>;
+  drm?: DRMOptions;
+  metadata?: { title?: string; artist?: string; artwork?: string };
+  useCaching?: boolean;     // Default false
+}
+```
+
+### `ContentType`
+
+```ts
+type ContentType = 'auto' | 'progressive' | 'hls' | 'dash' | 'smoothStreaming';
+```
+
+| Situation                                  | Set `contentType`?                                   |
+| ------------------------------------------ | ---------------------------------------------------- |
+| `.mp4` URL                                 | No                                                   |
+| `.m3u8` URL                                | No                                                   |
+| `.mpd` URL on Android                      | No                                                   |
+| HLS URL with no `.m3u8` extension on iOS   | **Yes** — `'hls'`, otherwise video tracks won't load |
+| Any signed/tokenized URL with no extension | Yes                                                  |
+| SmoothStreaming on Android                 | Yes — `'smoothStreaming'`                            |
+
+## VideoPlayer API
+
+### Properties
+
+**Playback control**:
+
+| Property           | Type                  | Default | Notes                                      |
+| ------------------ | --------------------- | ------- | ------------------------------------------ |
+| `playing`          | `boolean` (read-only) | —       | Use `play()`/`pause()`                     |
+| `currentTime`      | `number`              | —       | Seconds. Setting it seeks.                 |
+| `duration`         | `number` (read-only)  | —       | Seconds                                    |
+| `playbackRate`     | `number`              | `1.0`   | Range `0`–`16.0`                           |
+| `preservesPitch`   | `boolean`             | `true`  | Pitch correction during rate changes       |
+| `volume`           | `number`              | `1.0`   | Range `0`–`1.0`                            |
+| `muted`            | `boolean`             | `false` |                                            |
+| `loop`             | `boolean`             | `false` |                                            |
+| `status`           | (read-only)           | —       | `'idle'\|'loading'\|'readyToPlay'\|'error'`|
+| `bufferedPosition` | `number` (read-only)  | —       | Seconds buffered                           |
+
+**Tracks** (Android, iOS): `audioTrack`, `availableAudioTracks`, `subtitleTrack`, `availableSubtitleTracks`, `videoTrack`, `availableVideoTracks`.
+
+**Live**: `isLive`, `currentLiveTimestamp`, `currentOffsetFromLive`, `targetOffsetFromLive` (iOS).
+
+**External** (iOS): `allowsExternalPlayback`, `isExternalPlaybackActive`.
+
+**System integration**:
+
+| Property                     | Type      | Default  | Notes                                                  |
+| ---------------------------- | --------- | -------- | ------------------------------------------------------ |
+| `staysActiveInBackground`    | `boolean` | `false`  | Requires `supportsBackgroundPlayback` plugin           |
+| `showNowPlayingNotification` | `boolean` | `false`  | On Android also requires `supportsBackgroundPlayback`  |
+| `keepScreenOnWhilePlaying`   | `boolean` | `true`   | Android: only when a `VideoView` is visible            |
+| `audioMixingMode`            | enum      | `'auto'` | `'mixWithOthers'\|'duckOthers'\|'auto'\|'doNotMix'`    |
+
+**Tuning**: `bufferOptions`, `seekTolerance`, `scrubbingModeOptions`, `timeUpdateEventInterval` (default `0` = no event).
+
+### Methods
+
+```ts
+player.play()
+player.pause()
+player.replay()                       // seek to 0
+player.seekBy(seconds)                // approximate (seekTolerance)
+player.replaceAsync(source)           // preferred
+player.replace(source, disableWarning?) // sync; deprecated path on iOS
+player.generateThumbnailsAsync(times, { maxWidth?, maxHeight? })
+```
+
+### Type details
+
+**`AudioMixingMode`**: `doNotMix` > `auto` > `duckOthers` > `mixWithOthers`. Now-Playing notification on iOS requires `'doNotMix'` or `'auto'`.
+
+**`BufferOptions`** — replace the entire object:
+
+```ts
+{
+  preferredForwardBufferDuration?: number; // Android default 20, iOS default 0
+  minBufferForPlayback?: number;           // Android default 2
+  maxBufferBytes?: number | null;          // Android. 0 = auto
+  prioritizeTimeOverSizeThreshold?: boolean; // Android default false
+  waitsToMinimizeStalling?: boolean;       // iOS default true
+}
+```
+
+**`SeekTolerance`**: `{ toleranceBefore?, toleranceAfter? }` — both default 0 (exact).
+
+**`ScrubbingModeOptions`** for drag-to-scrub:
+
+```ts
+{
+  scrubbingModeEnabled?: boolean; // toggle on while dragging, off when released
+  // Android-only:
+  allowSkippingMediaCodecFlush?: boolean;
+  enableDynamicScheduling?: boolean;
+  increaseCodecOperatingRate?: boolean;
+  useDecodeOnlyFlag?: boolean;
+}
+```
+
+**`PlayerBuilderOptions`** (Android, third arg to `useVideoPlayer`/`createVideoPlayer`, immutable):
+
+```ts
+{ seekForwardIncrement?: number; seekBackwardIncrement?: number }
+```
+
+## VideoView props
+
+### Core
+
+| Prop                    | Type                             | Default     | Notes                                            |
+| ----------------------- | -------------------------------- | ----------- | ------------------------------------------------ |
+| `player`                | `VideoPlayer \| null`            | —           |                                                  |
+| `nativeControls`        | `boolean`                        | `true`      | Always on in fullscreen regardless               |
+| `contentFit`            | `'contain'\|'cover'\|'fill'`     | `'contain'` | `cover` may crop, `fill` distorts                |
+| `contentPosition` (iOS) | `{ dx, dy }`                     | —           |                                                  |
+
+### Fullscreen
+
+- `fullscreenOptions={{ enable: true }}`
+- `onFullscreenEnter` / `onFullscreenExit`
+
+### Picture-in-Picture
+
+- `allowsPictureInPicture` — requires plugin flag.
+- `startsPictureInPictureAutomatically` (Android 12+, iOS) — auto on backgrounding.
+- `onPictureInPictureStart` / `onPictureInPictureStop`.
+
+Only one player can be in PiP at a time.
+
+### Lifecycle / rendering
+
+- `onFirstFrameRender` — useful for hiding placeholders. May fire again on quality switch.
+- `requiresLinearPlayback` — disallows skipping/scrubbing.
+- `showsTimecodes` (iOS, default `true`).
+- `allowsVideoFrameAnalysis` (iOS 16+, default `true`).
+
+### Android-specific
+
+- `surfaceType: 'surfaceView' | 'textureView'` (default `'surfaceView'`). Use `textureView` to fix overlapping `cover` videos. **Don't change at runtime.**
+- `useExoShutter` (default `false`).
+- `buttonOptions`: `{ showBottomBar?, showPlayPause?, showSeekForward?, showSeekBackward?, showSettings?, showNext?, showPrevious?, showSubtitles? }` — all default `true` except next/previous.
+
+### Web
+
+- `playsInline`
+- `crossOrigin: 'anonymous' | 'use-credentials'`
+- `useAudioNodePlayback` (experimental)
+
+### Imperative ref methods
+
+```ts
+ref.enterFullscreen()
+ref.exitFullscreen()
+ref.startPictureInPicture()  // throws if unsupported
+ref.stopPictureInPicture()
+```
+
+```ts
+import { isPictureInPictureSupported } from 'expo-video';
+if (isPictureInPictureSupported()) { /* ... */ }
+```
 
 ## Common patterns
 
 ### Replacing the source
 
 ```tsx
-await player.replaceAsync(newSource); // Preferred — async on iOS
+await player.replaceAsync(newSource);
 player.play();
 ```
 
-`replace()` exists but loads synchronously on the iOS UI thread (it can stutter) and is being deprecated. Default to `replaceAsync()`.
+Always prefer `replaceAsync()` over `replace()` (sync, blocks UI on iOS).
 
 ### Preloading
 
-A `VideoPlayer` starts buffering as soon as it has a source — even before being attached to a view. Create the next player in advance and swap it into a `<VideoView>` when ready:
-
 ```tsx
 const player1 = useVideoPlayer(currentSource, (p) => p.play());
-const player2 = useVideoPlayer(nextSource); // Preloads in the background
-
+const player2 = useVideoPlayer(nextSource); // Preloads in background
 const [active, setActive] = useState(player1);
-
 // Later: setActive(player2); player2.play();
 ```
 
-### Local files and `require`
+### Local files
 
 ```tsx
 const asset = require('./assets/clip.mp4');
 const player = useVideoPlayer(asset);
-// Or, with metadata:
+// Or with metadata:
 useVideoPlayer({ assetId: asset, metadata: { title: 'Clip' } });
 ```
 
 ### Media library videos
 
-Request permission via `expo-media-library`, then pass `asset.uri` (not `localUri` on iOS — it lacks read permissions):
-
 ```tsx
+import * as MediaLibrary from 'expo-media-library';
+
 await MediaLibrary.requestPermissionsAsync(false, ['video']);
 const { assets } = await MediaLibrary.getAssetsAsync({ mediaType: 'video' });
-await player.replaceAsync(assets[0].uri);
+await player.replaceAsync(assets[0].uri); // use asset.uri (not localUri) on iOS
 ```
+
+`PHAsset` URIs on iOS load only via `replaceAsync()` — not `replace()`.
 
 ### Caching
 
 ```tsx
 useVideoPlayer({ uri, useCaching: true });
 ```
-
-Cache is persistent and LRU-evicted. Default size is 1GB.
 
 ```tsx
 import {
@@ -229,92 +384,163 @@ import {
 } from 'expo-video';
 ```
 
-Cache management functions can only be called when **no `VideoPlayer` instances exist**. Caveats: HLS caching is unsupported on iOS, and DRM caching is unsupported on both platforms.
+Default 1GB. Persistent + LRU evicted. Cache management requires **no live `VideoPlayer` instances**.
 
-### Fullscreen, Picture-in-Picture, AirPlay
+Limitations: HLS caching unsupported on iOS. DRM caching unsupported on both.
+
+### DRM
+
+```ts
+type DRMOptions = {
+  type: 'clearkey' | 'fairplay' | 'playready' | 'widevine';
+  licenseServer: string;
+  headers?: Record<string, string>;
+  // FairPlay (iOS):
+  certificateUrl?: string;
+  base64CertificateData?: string; // wins over certificateUrl
+  contentId?: string;
+  // Android:
+  multiKey?: boolean;
+};
+```
+
+Platforms: Android — ClearKey, PlayReady, Widevine. iOS — FairPlay.
+
+```tsx
+// Widevine (Android)
+useVideoPlayer({
+  uri: 'https://example.com/video.mpd',
+  contentType: 'dash',
+  drm: {
+    type: 'widevine',
+    licenseServer: 'https://license.example.com/widevine',
+    headers: { 'X-AxDRM-Message': '...' },
+  },
+});
+
+// FairPlay (iOS)
+useVideoPlayer({
+  uri: 'https://example.com/video.m3u8',
+  contentType: 'hls',
+  drm: {
+    type: 'fairplay',
+    licenseServer: 'https://license.example.com/fps',
+    certificateUrl: 'https://license.example.com/fps/cert',
+    contentId: 'asset-id',
+  },
+});
+```
+
+For DRM license-server headers, use `DRMOptions.headers` (sent only on license requests). Generic headers go on the source.
+
+### Fullscreen, PiP, AirPlay
 
 ```tsx
 <VideoView
   player={player}
   fullscreenOptions={{ enable: true }}
   allowsPictureInPicture
-  startsPictureInPictureAutomatically // PiP when app backgrounds
+  startsPictureInPictureAutomatically
 />
 ```
 
-For AirPlay, set `player.allowsExternalPlayback = true` and add `<VideoAirPlayButton />` (iOS).
+For AirPlay: set `player.allowsExternalPlayback = true` and add `<VideoAirPlayButton />` (iOS).
 
-For details on `ButtonOptions`, fullscreen options, surface types, AirPlay button props, and ref methods (`enterFullscreen()`, `startPictureInPicture()`, etc.), see `references/videoview-props.md`.
+```tsx
+import { VideoAirPlayButton } from 'expo-video';
+
+<VideoAirPlayButton
+  style={{ width: 44, height: 44 }}
+  tint='white'
+  activeTint='dodgerblue'
+/>;
+```
+
+`VideoAirPlayButton` props: `tint`, `activeTint`, `prioritizeVideoDevices` (default `true`), `onBeginPresentingRoutes`, `onEndPresentingRoutes`.
 
 ### Subtitle and audio tracks
 
 ```tsx
 const { availableSubtitleTracks } = player;
-player.subtitleTrack = availableSubtitleTracks[0]; // or null to disable
+player.subtitleTrack = availableSubtitleTracks[0]; // null to disable
 player.audioTrack = player.availableAudioTracks[0];
 ```
 
-Always assign a track from the `available*Tracks` arrays — don't construct one manually. Listen to `availableSubtitleTracksChange` if tracks load asynchronously (HLS, DASH).
+Always assign from `available*Tracks`. Listen to `availableSubtitleTracksChange` for HLS/DASH async loads.
 
 ### Generating thumbnails
 
 ```tsx
 const [thumb] = await player.generateThumbnailsAsync([10.5], { maxWidth: 320 });
-// thumb is a SharedRef<'image'> — use it as a source for expo-image:
+// thumb is a SharedRef<'image'> — pass to expo-image:
 // <Image source={thumb} style={{ width, height }} />
 ```
 
-Pass an array of times (in seconds) for multiple thumbs. Android/iOS only.
+Pass an array of times for multiple thumbs. Android/iOS only.
 
-### Background playback and Now-Playing notification
+### Background playback + Now-Playing
 
-Requires `supportsBackgroundPlayback: true` in the config plugin, then on the player:
+Requires `supportsBackgroundPlayback: true` plugin flag, then:
 
 ```tsx
 player.staysActiveInBackground = true;
 player.showNowPlayingNotification = true;
 ```
 
-The Now-Playing notification uses `metadata` from the source (`title`, `artist`, `artwork`).
+Now-Playing uses `metadata` from the source (`title`, `artist`, `artwork`).
 
 ## Direct player creation (advanced)
-
-`useVideoPlayer` auto-releases when the component unmounts. If you genuinely need a player that outlives the component (rare — usually a singleton service), use:
 
 ```tsx
 import { createVideoPlayer } from 'expo-video';
 const player = createVideoPlayer(source);
-// You MUST call player.release() yourself, or you'll leak native memory.
+// MUST call player.release() yourself or leak native memory.
 ```
 
 Default to the hook unless there's a clear reason not to.
 
+## Track types
+
+```ts
+type AudioTrack = {
+  label: string;
+  language: string;
+  name?: string; // Android, iOS
+  id?: string;   // Android
+  isDefault?: boolean;
+  autoSelect?: boolean;
+};
+// SubtitleTrack same shape
+
+type VideoTrack = {
+  id: string;
+  size: { width: number; height: number };
+  averageBitrate: number | null;
+  peakBitrate: number | null;
+  bitrate: number | null; // deprecated
+  frameRate: number | null;
+  mimeType: string | null;
+  url: string | null; // HLS only
+  isSupported: boolean; // Android
+};
+```
+
 ## Common pitfalls
 
-- **Forgetting events.** Mutating `player.muted` or `player.currentTime` won't update React state. If the UI looks "stuck," the user is almost certainly reading a property without subscribing to its change event.
-- **Two overlapping `<VideoView>`s with `contentFit="cover"`.** A known upstream Android bug renders one out of bounds. Workaround: set `surfaceType="textureView"` on Android.
-- **Multiple `<VideoView>`s sharing one player on Android.** Not supported (platform limitation). One player per visible view on Android.
-- **HLS without the `.m3u8` extension on iOS.** Video tracks won't be detected. Either use an `.m3u8` URL or set `contentType: 'hls'` on the source.
-- **Calling cache management functions while a player exists.** `setVideoCacheSizeAsync` and `clearVideoCacheAsync` require zero live `VideoPlayer` instances.
-- **`localUri` on iOS for media-library assets.** It lacks read permissions — use `asset.uri`.
-- **Expecting PiP/background playback to work without the config plugin.** Both require build-time native config; setting runtime props alone is insufficient.
+- **Forgetting events.** Property mutations don't update React state.
+- **Two overlapping `<VideoView>`s with `contentFit="cover"`** — Android bug. Set `surfaceType="textureView"`.
+- **Multiple `<VideoView>`s sharing one player on Android** — not supported. One player per visible view.
+- **HLS without `.m3u8` extension on iOS** — set `contentType: 'hls'`.
+- **Cache management with live players** — `setVideoCacheSizeAsync`/`clearVideoCacheAsync` require zero `VideoPlayer` instances.
+- **`localUri` on iOS for media-library** — use `asset.uri` instead.
+- **PiP/background without config plugin** — both require build-time native config.
 
-## Quick checklist when writing code
+## Checklist
 
-- Imports come from `'expo-video'` (`useVideoPlayer`, `VideoView`, `createVideoPlayer`, `VideoAirPlayButton`, cache helpers) and `'expo'` (`useEvent`, `useEventListener`).
+- Imports from `'expo-video'` (`useVideoPlayer`, `VideoView`, `createVideoPlayer`, `VideoAirPlayButton`, cache helpers) and `'expo'` (`useEvent`, `useEventListener`).
 - Default to `useVideoPlayer` over `createVideoPlayer`.
-- Subscribe to events for any player property that drives the UI.
-- `<VideoView>` has an explicit size in `style` (or `flex: 1` inside a sized parent).
-- For PiP / background playback, the `expo-video` config plugin is added in `app.json` and a new build is required.
+- Subscribe to events for player props that drive UI.
+- `<VideoView>` has explicit size in `style`.
+- For PiP/background, plugin in `app.json` + new build.
 - Prefer `replaceAsync()` over `replace()`.
-- HLS/DASH sources include the right extension or set `contentType` explicitly.
-
-## Further reference
-
-The detailed reference material is split into supporting files. Read these on demand — don't load them upfront:
-
-- `references/events.md` — every event name, payload shape, and platform support.
-- `references/videoview-props.md` — full prop list for `<VideoView>` and `<VideoAirPlayButton>`, plus imperative ref methods.
-- `references/player-api.md` — full `VideoPlayer` property and method reference, plus `BufferOptions`, `ScrubbingModeOptions`, `SeekTolerance`.
-- `references/sources-and-streaming.md` — `VideoSource` shape, `ContentType`, DRM (`DRMOptions`, `DRMType`), headers, caching rules, `PHAsset` URIs, livestream metadata.
-- `references/configuration.md` — config plugin flags and what they change natively.
+- HLS/DASH includes correct extension or `contentType` set.

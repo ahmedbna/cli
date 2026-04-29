@@ -1,21 +1,18 @@
 ---
 name: expo-routing
-description: Use when implementing navigation, file-based routing, tabs, dynamic routes, or protected routes with Expo Router. Trigger on "navigation", "routing", "tabs", "tab bar", "NativeTabs", "dynamic route", "router.push", "Link", "protected route", or any screen navigation pattern.
+description: File-based routing with Expo Router — layouts, tabs, dynamic routes, and protected routes.
 ---
 
 # Expo Router — File-Based Routing
 
-## Directory = Route Group
+## Directory = Route
 
-Files inside `app/` map directly to routes:
 - `app/index.tsx` → `/`
-- `app/(home)/index.tsx` → `/` (within the home group)
+- `app/(home)/index.tsx` → `/` (within home group)
 - `app/(home)/settings.tsx` → `/settings`
-- `app/profile/[id].tsx` → `/profile/:id` (dynamic route)
+- `app/profile/[id].tsx` → `/profile/:id` (dynamic)
 
 ## Layouts
-
-`_layout.tsx` files wrap child routes:
 
 ```tsx
 // app/_layout.tsx — Root layout
@@ -28,15 +25,12 @@ export default function RootLayout() {
 ## Navigation
 
 ```tsx
-import { router } from "expo-router";
+import { router, Link } from "expo-router";
 
-// Navigate
 router.push("/profile/123");
 router.replace("/home");
 router.back();
 
-// With Link component
-import { Link } from "expo-router";
 <Link href="/settings">Go to Settings</Link>
 ```
 
@@ -75,8 +69,6 @@ export default function HomeLayout() {
 ```
 
 ## Protected routes
-
-Use `(home)` group with auth check in the root layout:
 
 ```tsx
 // app/_layout.tsx

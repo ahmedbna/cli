@@ -1,6 +1,6 @@
 ---
 name: expo-eas-build
-description: Use when setting up EAS Build for cloud builds, configuring build profiles, publishing OTA updates, or preparing for App Store / Play Store submission. Trigger on "EAS", "cloud build", "build profile", "OTA update", "app store", "play store", "production build", or "eas.json".
+description: EAS Build for cloud builds, build profiles, OTA updates, and App Store/Play Store submission.
 ---
 
 # EAS Build (Expo Application Services)
@@ -40,7 +40,7 @@ eas build:configure   # creates eas.json
 eas build --platform ios --profile development
 eas build --platform android --profile development
 
-# Preview build (internal distribution, no dev client)
+# Preview build (internal distribution)
 eas build --platform all --profile preview
 
 # Production build (App Store / Play Store)
@@ -53,12 +53,9 @@ eas build --platform all --profile production
 eas update --branch production --message "Fix typo"
 ```
 
-OTA updates push JS changes without a new native build.
-Only use for non-native changes.
+OTA pushes JS changes without a new native build. Only for non-native changes.
 
-## Environment variables in EAS
-
-Set in eas.json or via dashboard:
+## Environment variables
 
 ```json
 {

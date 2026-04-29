@@ -1,43 +1,39 @@
 ---
 name: expo-camera
-description: Render a camera preview and take photos, record videos, or scan barcodes/QR codes in Expo/React Native apps using expo-camera. Use when adding camera capture, photo/video recording, QR or barcode scanning, torch/flash control, or front/back camera switching to an Expo app.
+description: Camera preview, photo capture, video recording, and barcode/QR scanning with `expo-camera`. Test on real devices — does not run on simulators.
 ---
 
 # Expo Camera
-
-Camera preview, photo capture, video recording, and barcode/QR scanning for Expo React Native apps. Works on Android, iOS, and Web. **Does not run in iOS or Android simulators — test on a real device.**
-
-## Install
 
 ```sh
 npx expo install expo-camera
 ```
 
+**Does not run in iOS or Android simulators — test on a real device.**
+
 ## Core API
 
-Import from `expo-camera`:
-
-- **Component**: `CameraView` (the preview + capture surface)
+- **Component**: `CameraView`
 - **Hooks**: `useCameraPermissions`, `useMicrophonePermissions`
 - **Static methods on `CameraView`**: `launchScanner`, `dismissScanner`, `onModernBarcodeScanned`, `getAvailableVideoCodecsAsync`, `isAvailableAsync`
 - **Module method**: `Camera.scanFromURLAsync(url, barcodeTypes?)`
 
-⚠️ Only **one** `CameraView` can be active at a time. Unmount it on screens that lose focus (use `useIsFocused()` from `@react-navigation/native`).
+⚠️ Only **one** `CameraView` can be active at a time. Unmount on screens that lose focus (use `useIsFocused()` from `@react-navigation/native`).
 
-## 1. Permissions (always do this first)
+## 1. Permissions
 
 ```tsx
 import { useCameraPermissions } from 'expo-camera';
 
 const [permission, requestPermission] = useCameraPermissions();
 
-if (!permission) return <View />; // still loading
+if (!permission) return <View />;
 if (!permission.granted) {
   return <Button title='Grant camera' onPress={requestPermission} />;
 }
 ```
 
-For video recording with audio, also call `useMicrophonePermissions()` the same way.
+For video with audio, also `useMicrophonePermissions()`.
 
 ## 2. Config plugin (`app.json`)
 
@@ -59,11 +55,7 @@ For video recording with audio, also call `useMicrophonePermissions()` the same 
 }
 ```
 
-Set `barcodeScannerEnabled: false` to shrink the binary if you don't scan codes. Plugin changes need a rebuild (`npx expo prebuild`), not a JS reload.
-
 ## 3. Take a photo
-
-Use a `ref` on `CameraView` to call `takePictureAsync()`.
 
 ```tsx
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -79,14 +71,12 @@ export default function PhotoScreen() {
     return <Button onPress={requestPermission} title='Grant' />;
 
   const snap = async () => {
-    if (!ready) return; // wait for onCameraReady
+    if (!ready) return;
     const photo = await ref.current?.takePictureAsync({
-      quality: 0.8, // 0 (small) - 1 (max)
-      // base64: true,                         // include base64 string
-      // exif: true,                           // include EXIF
-      // skipProcessing: true,                 // faster but may rotate wrong
+      quality: 0.8,
+      // base64: true, exif: true, skipProcessing: true,
     });
-    if (photo) setUri(photo.uri); // local file URI (cache dir)
+    if (photo) setUri(photo.uri);
   };
 
   return (
@@ -101,52 +91,45 @@ export default function PhotoScreen() {
 }
 ```
 
-⚠️ Photo `uri` is in the **cache directory** and may be deleted by the OS. Copy it with `expo-file-system` if you need it long-term.
+⚠️ Photo `uri` is in cache — copy with `expo-file-system` for long-term storage.
 
 ## 4. Record video
-
-Set `mode="video"` on `CameraView`, then call `recordAsync()` / `stopRecording()`.
 
 ```tsx
 <CameraView ref={ref} mode='video' style={{ flex: 1 }} />;
 
-// start
 const startRecording = async () => {
-  // recordAsync resolves when stopRecording is called or limits hit
   const video = await ref.current?.recordAsync({
-    maxDuration: 60, // seconds
+    maxDuration: 60,
     // maxFileSize: 50_000_000,
-    // codec: 'hvc1',       // iOS only — needed for videoBitrate prop
+    // codec: 'hvc1',
   });
-  console.log(video?.uri); // local file URI
+  console.log(video?.uri);
 };
 
-// stop
 ref.current?.stopRecording();
 ```
 
 **Gotchas**:
-
 - Flipping `facing` mid-recording stops it.
-- For silent video, set `mute` prop on `CameraView`.
-- For pause/resume mid-recording: check `getSupportedFeatures().toggleRecordingAsyncAvailable` then call `toggleRecordingAsync()` (iOS 18+).
+- Set `mute` prop for silent video.
+- Pause/resume: check `getSupportedFeatures().toggleRecordingAsyncAvailable` then call `toggleRecordingAsync()` (iOS 18+).
 
 ## 5. Scan barcodes / QR codes (live preview)
 
 ```tsx
 <CameraView
   style={{ flex: 1 }}
-  barcodeScannerSettings={{ barcodeTypes: ['qr'] }} // or ['qr','ean13','code128',...]
+  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
   onBarcodeScanned={({ type, data }) => {
     console.log(type, data);
-    // Debounce — onBarcodeScanned fires on every frame that detects a code
   }}
 />
 ```
 
 Supported types: `qr`, `ean13`, `ean8`, `upc_a`, `upc_e`, `code39`, `code93`, `code128`, `codabar`, `itf14`, `pdf417`, `aztec`, `datamatrix`.
 
-⚠️ `onBarcodeScanned` fires repeatedly. Track scanned state to avoid duplicates:
+⚠️ Fires on every frame. Debounce:
 
 ```tsx
 const scanned = useRef(false);
@@ -159,15 +142,13 @@ onBarcodeScanned={({ data }) => {
 
 ### Native modal scanner (recommended for one-shot scans)
 
-Uses Google ML Kit (Android) / `DataScannerViewController` (iOS 16+). Doesn't need a `CameraView`:
-
 ```tsx
 import { CameraView } from 'expo-camera';
 
 const sub = CameraView.onModernBarcodeScanned(({ type, data }) => {
   console.log(data);
   sub.remove();
-  CameraView.dismissScanner(); // iOS only; Android auto-dismisses
+  CameraView.dismissScanner();
 });
 
 await CameraView.launchScanner({ barcodeTypes: ['qr'] });
@@ -186,45 +167,29 @@ const results = await Camera.scanFromURLAsync(imageUri, ['qr']);
 | ------------------------ | --------------------------------------------------------- | ---------------------------------------- |
 | `facing`                 | `'back'` \| `'front'`                                     | default `'back'`                         |
 | `flash`                  | `'off'` \| `'on'` \| `'auto'` \| `'screen'`               | `'screen'` for selfie flash              |
-| `enableTorch`            | `boolean`                                                 | flashlight (continuous)                  |
+| `enableTorch`            | `boolean`                                                 | flashlight                               |
 | `zoom`                   | `0` to `1`                                                | percentage of max zoom                   |
-| `mode`                   | `'picture'` \| `'video'`                                  | switch before recording                  |
+| `mode`                   | `'picture'` \| `'video'`                                  |                                          |
 | `mute`                   | `boolean`                                                 | record video without audio               |
-| `mirror`                 | `boolean`                                                 | mirror front-cam preview/output          |
-| `videoQuality`           | `'2160p'` \| `'1080p'` \| `'720p'` \| `'480p'` \| `'4:3'` | falls back if unavailable                |
+| `mirror`                 | `boolean`                                                 | mirror front-cam                         |
+| `videoQuality`           | `'2160p'` \| `'1080p'` \| `'720p'` \| `'480p'` \| `'4:3'` |                                          |
 | `videoStabilizationMode` | `'off'` \| `'standard'` \| `'cinematic'` \| `'auto'`      |                                          |
-| `pictureSize`            | string from `getAvailablePictureSizesAsync()`             | overrides `ratio`                        |
+| `pictureSize`            | from `getAvailablePictureSizesAsync()`                    | overrides `ratio`                        |
 | `ratio`                  | `'4:3'` \| `'16:9'` \| `'1:1'`                            | Android only                             |
-| `active`                 | `boolean`                                                 | iOS only — pause session without unmount |
+| `active`                 | `boolean`                                                 | iOS only — pause without unmount         |
 | `animateShutter`         | `boolean`                                                 | default `true`                           |
-| `onCameraReady`          | `() => void`                                              | wait for this before capturing           |
+| `onCameraReady`          | `() => void`                                              | wait before capturing                    |
 | `onMountError`           | `(e) => void`                                             | preview failed to start                  |
-
-## 7. Pinch-to-zoom (basic pattern)
-
-`zoom` is `0–1`. Pair with `react-native-gesture-handler`'s pinch gesture and clamp:
-
-```tsx
-const [zoom, setZoom] = useState(0);
-// onPinch: setZoom(Math.min(1, Math.max(0, prevZoom + scale - 1)))
-<CameraView zoom={zoom} ... />
-```
 
 ## Common gotchas
 
-- **Black preview / nothing renders**: testing on a simulator. Use a real device.
-- **`takePictureAsync` throws or returns last frame**: called before `onCameraReady` fired, or while preview was paused.
-- **`onBarcodeScanned` fires hundreds of times**: debounce via a `useRef` flag.
-- **Photo file disappears later**: `uri` is in cache; copy it with `expo-file-system` before relying on it.
-- **Video recorded sideways**: `skipProcessing: true` was set — remove it, or honor EXIF orientation downstream.
-- **Recording starts but no audio**: missing `RECORD_AUDIO` (Android) or `NSMicrophoneUsageDescription` (iOS), or microphone permission not requested.
-- **Two cameras in two screens conflict**: only one `CameraView` may be active. Unmount on blur with `useIsFocused()`.
-- **Web: image `uri` is base64**: browsers don't expose file paths. Treat `uri` as a data string on web.
-- **iOS `videoBitrate` prop ignored**: you must also pass `codec` to `recordAsync`.
-- **Changing config plugin doesn't take effect**: requires a native rebuild.
-
-## Web notes
-
-- HTTPS required for camera access.
-- In a cross-origin iframe, the parent must set `allow="camera; microphone;"`.
-- Check device support with `await CameraView.isAvailableAsync()`.
+- **Black preview**: testing on simulator. Use a real device.
+- **`takePictureAsync` throws**: called before `onCameraReady`.
+- **`onBarcodeScanned` fires hundreds of times**: debounce via `useRef`.
+- **Photo file disappears**: cache dir; copy with `expo-file-system`.
+- **Video sideways**: `skipProcessing: true` — remove or honor EXIF.
+- **No audio**: missing mic permission.
+- **Two cameras conflict**: only one active. Unmount with `useIsFocused()`.
+- **Web**: HTTPS required.
+- **iOS `videoBitrate` ignored**: also pass `codec`.
+- **Plugin changes**: require native rebuild.

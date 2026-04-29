@@ -1,6 +1,6 @@
 ---
 name: convex-types
-description: Use when working with Convex TypeScript types — Doc, Id, Infer, FunctionReturnType. Trigger on "Doc type", "Id type", "Infer type", "function return type", "type safety", or when typing Convex data in React Native components and props.
+description: Convex TypeScript types — `Doc`, `Id`, `Infer`, `FunctionReturnType` for typing Convex data in components and props.
 ---
 
 # Convex TypeScript Types

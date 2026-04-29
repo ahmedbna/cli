@@ -1,17 +1,13 @@
 ---
 name: supabase-auth-expo
-description: Use when wiring Supabase Auth into an Expo / React Native app — session persistence, auto-refresh, OAuth deep links, anonymous sign-in, password rules, or syncing auth.users to a public.users profile row. Trigger on "supabase auth", "signIn", "signUp", "signInWithOAuth", "signInAnonymously", "session", "AsyncStorage", "SecureStore", "auth state", "onAuthStateChange", "expo-auth-session", "deep link", "redirect", "auth.users", "handle_new_user", or any auth flow that has to work on iOS/Android (not the browser).
+description: Wire Supabase Auth into Expo/RN — session persistence, auto-refresh, OAuth deep links, anonymous sign-in, and `auth.users` → `public.users` triggers.
 ---
 
 # Supabase Auth on Expo / React Native
 
-Supabase Auth ships as a browser-first SDK. Naively dropping it into Expo gives you four bugs in a row: sessions don't persist, tokens silently expire in the background, OAuth never returns, and `public.users` rows are never created. Fix all four explicitly.
+Four things must be set up explicitly — sessions don't persist, tokens silently expire in background, OAuth never returns, and `public.users` rows aren't created automatically without them.
 
-## The four things that must be set up — in order
-
-### 1. Custom storage adapter (SecureStore on native, default on web)
-
-Without a storage adapter, sessions don't survive app restarts. The default browser adapter (`localStorage`) doesn't exist in RN.
+## 1. Custom storage adapter (SecureStore)
 
 ```ts
 // supabase/client.ts
@@ -35,18 +31,18 @@ export const supabase = createClient<Database>(
       storage: ExpoSecureStoreAdapter,
       autoRefreshToken: true,
       persistSession: true,
-      detectSessionInUrl: false, // RN is not a browser — must be false
+      detectSessionInUrl: false, // RN is not a browser
       flowType: 'pkce',          // required for OAuth on mobile
     },
   },
 );
 ```
 
-**SecureStore has a 2 KB value limit on iOS.** Supabase's session blob is well under that today, but if you ever stuff custom data into `user_metadata` and tokens grow, swap in `@react-native-async-storage/async-storage` instead — it has no size cap.
+**SecureStore has 2 KB value limit on iOS.** If sessions grow past that, use `@react-native-async-storage/async-storage`.
 
-### 2. AppState foreground/background handler
+## 2. AppState foreground/background handler
 
-Without this, `autoRefreshToken: true` does nothing useful on mobile. JS timers are paused when the app backgrounds, so a 1-hour token quietly expires while the user is away and the next request 401s.
+JS timers pause when app backgrounds — without this, tokens silently expire and next request 401s.
 
 ```ts
 // In supabase/client.ts, after createClient
@@ -58,11 +54,9 @@ if (Platform.OS !== 'web') {
 }
 ```
 
-This is non-optional on native. Add it once, at module scope, in the same file as `createClient`.
+Non-optional on native.
 
-### 3. AuthProvider with `getSession()` + `onAuthStateChange`
-
-Render-blocking on a stale `null` session is the most common bug. Always show a loading state until `getSession()` resolves the SecureStore-restored session.
+## 3. AuthProvider with `getSession()` + `onAuthStateChange`
 
 ```tsx
 // hooks/useAuth.tsx
@@ -73,14 +67,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
 
   useEffect(() => {
-    // Restore from SecureStore — async, so we start in 'loading'.
+    // Restore from SecureStore — async
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setStatus(data.session ? 'authenticated' : 'unauthenticated');
     });
 
-    // Subscribe to every auth event: SIGNED_IN, SIGNED_OUT,
-    // TOKEN_REFRESHED, USER_UPDATED, PASSWORD_RECOVERY.
+    // SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED, PASSWORD_RECOVERY
     const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
       setSession(next);
       setStatus(next ? 'authenticated' : 'unauthenticated');
@@ -88,12 +81,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => sub.subscription.unsubscribe();
   }, []);
-
-  // ... expose status, session, signIn, signUp, signOut via context
 }
 ```
 
-Gate the entire app on `status`:
+Gate the app on `status`:
 
 ```tsx
 {status === 'loading' && <Spinner />}
@@ -101,18 +92,18 @@ Gate the entire app on `status`:
 {status === 'authenticated' && <Stack />}
 ```
 
-Never render protected screens while `status === 'loading'` — RLS will reject the queries, the UI flashes errors, and TanStack Query caches the failures.
+**Never render protected screens while `status === 'loading'`** — RLS rejects, UI flashes errors.
 
-### 4. Auto-create public.users on sign-up (database trigger)
+## 4. Auto-create public.users on sign-up (DB trigger)
 
-`auth.users` is managed by GoTrue and is **not** queryable by the client. Your app code talks to `public.users`. Without a trigger, sign-up creates an auth row with no matching profile row — every `select` returns null.
+`auth.users` is GoTrue-managed and not queryable. App code uses `public.users`.
 
 ```sql
 -- supabase/migrations/0004_auth_triggers.sql
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
-security definer            -- must bypass RLS to insert
+security definer            -- bypasses RLS to insert
 set search_path = public
 as $$
 declare
@@ -136,9 +127,9 @@ create trigger on_auth_user_created
   for each row execute function public.handle_new_user();
 ```
 
-`security definer` is required — the trigger runs as the table owner, not the anon role, so it can insert into `public.users` even though there's no INSERT policy. **Do not** add a client-facing INSERT policy on `users`; that's a footgun. The trigger is the only way profile rows get created.
+**Do not** add a client-facing INSERT policy on `users`. The trigger is the only writer.
 
-Mirror email/`email_confirmed_at` changes too:
+Mirror email/confirmation changes:
 
 ```sql
 create or replace function public.handle_user_email_change()
@@ -161,7 +152,7 @@ create trigger on_auth_user_updated
 
 ## Email + password sign-up
 
-Always validate password rules **client-side** before calling the SDK. GoTrue's default error messages are unhelpful (`"Password should be at least 6 characters"` regardless of which rule failed).
+Validate password rules **client-side** before calling the SDK:
 
 ```ts
 // supabase/api/auth.ts
@@ -191,17 +182,16 @@ export const auth = {
 };
 ```
 
-If `enable_confirmations = true` in `config.toml`, `signUp` returns success but the user can't sign in until they click the email link. Tell the user explicitly:
+If `enable_confirmations = true`, sign-up creates user without session:
 
 ```ts
 const { data, error } = await supabase.auth.signUp({ email, password });
 if (data.user && !data.session) {
-  // confirmation email was sent — no session yet
   showToast('Check your email to confirm your account.');
 }
 ```
 
-## Anonymous sign-in (guest mode)
+## Anonymous sign-in
 
 ```ts
 async signInAnonymously() {
@@ -210,20 +200,15 @@ async signInAnonymously() {
 },
 ```
 
-Enable it in `supabase/config.toml`:
-
 ```toml
+# supabase/config.toml
 [auth]
 enable_anonymous_sign_ins = true
 ```
 
-Anonymous users get a real `auth.users` row with `is_anonymous = true` (readable from `raw_app_meta_data.provider === 'anonymous'`). The trigger above already handles this. To later "upgrade" them to a real account, call `supabase.auth.updateUser({ email, password })` while the anonymous session is still active — same `auth.users` row, same `id`, just gets an email/password attached.
+To upgrade later: `supabase.auth.updateUser({ email, password })` while anonymous session is active — same `id`, just adds credentials.
 
-**Don't gate read-only screens behind anonymous sign-in.** The whole point is frictionless onboarding. Make sign-in reactive: if a guest tries to do something that requires a "real" user (e.g. invite a friend), prompt for email there.
-
-## OAuth on Expo (Google / Apple / GitHub)
-
-The browser flow doesn't work on native. You **must** use `expo-web-browser` + `expo-auth-session` and hand the resulting code back to Supabase.
+## OAuth on Expo
 
 ```ts
 import * as WebBrowser from 'expo-web-browser';
@@ -231,7 +216,7 @@ import * as Linking from 'expo-linking';
 import { makeRedirectUri } from 'expo-auth-session';
 
 async function signInWithGoogle() {
-  const redirectTo = makeRedirectUri({ scheme: 'bna' }); // matches app.json "scheme"
+  const redirectTo = makeRedirectUri({ scheme: 'bna' });
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
@@ -241,9 +226,8 @@ async function signInWithGoogle() {
   if (!data?.url) throw new Error('No OAuth URL returned');
 
   const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-  if (result.type !== 'success') return; // user cancelled
+  if (result.type !== 'success') return;
 
-  // result.url looks like: bna://auth?code=abc123
   const url = new URL(result.url);
   const code = url.searchParams.get('code');
   if (!code) throw new Error('No code in OAuth callback');
@@ -253,29 +237,24 @@ async function signInWithGoogle() {
 }
 ```
 
-Three things must line up or this fails silently:
+Three places must align:
 
-| Place | Value | Notes |
-| ----- | ----- | ----- |
-| `app.json` | `"scheme": "bna"` | Lowercase, no special chars. |
-| `supabase/config.toml` | `site_url = "bna://"` and `additional_redirect_urls = ["bna://*"]` | Both required. |
-| Provider console (Google/Apple/GitHub) | Add the Supabase callback URL: `https://<ref>.supabase.co/auth/v1/callback` | Not the `bna://` URL. |
+| Place                                 | Value                                                                              |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| `app.json`                            | `"scheme": "bna"`                                                                  |
+| `supabase/config.toml`                | `site_url = "bna://"` and `additional_redirect_urls = ["bna://*"]`                 |
+| Provider console (Google/Apple/etc)   | Supabase callback URL: `https://<ref>.supabase.co/auth/v1/callback`                |
 
-The provider redirects to Supabase, Supabase redirects to `bna://`, Expo opens your app. If any link in the chain is wrong, you sit on the OAuth screen forever.
-
-`flowType: 'pkce'` is required in `createClient` — implicit flow doesn't work with `expo-auth-session`.
+`flowType: 'pkce'` is required.
 
 ## Reading the current user
 
-Two distinct things — don't confuse them:
-
 ```ts
-// Cheap, synchronous-feeling — reads from in-memory session.
-// Use this for "is the user signed in?" gates.
+// In-memory — for "is signed in?" gates
 const { data } = await supabase.auth.getUser();
 const userId = data.user?.id;
 
-// What 99% of screens actually want — the public.users profile row.
+// What 99% of screens want — the public.users profile row
 const { data: profile } = await supabase
   .from('users')
   .select('*')
@@ -283,9 +262,7 @@ const { data: profile } = await supabase
   .maybeSingle();
 ```
 
-`auth.users` ≠ `public.users`. The auth row has `id`, `email`, `phone`, `app_metadata`, `user_metadata`, and that's it. Custom fields (`name`, `bio`, `birthday`, etc.) live on `public.users`. Always join via `id`.
-
-Wrap this in a `loggedInUser()` helper and let TanStack Query handle reactivity:
+`auth.users` ≠ `public.users`. Custom fields live on `public.users`.
 
 ```ts
 // supabase/api/auth.ts
@@ -298,30 +275,30 @@ async loggedInUser(): Promise<User | null> {
   return data;
 }
 
-// In a screen:
+// In a screen
 const { data: user, isLoading } = useQuery({
   queryKey: ['auth', 'me'],
   queryFn: api.auth.loggedInUser,
 });
 ```
 
-Invalidate `['auth', 'me']` after profile updates so the cache refreshes.
+Invalidate `['auth', 'me']` after profile updates.
 
 ## Hard rules
 
 - **Don't** call `createClient` in more than one place. UI imports `@/supabase/api`, never `@/supabase/client`.
-- **Don't** add an INSERT policy on `public.users`. The trigger is the only authorized writer.
-- **Don't** use `getUser()` everywhere instead of `getSession()` — `getUser()` makes a network round-trip. For "am I logged in" checks, read the session.
-- **Don't** trust the client about `is_anonymous`. RLS checks against `auth.uid()` and `auth.jwt()` — always derive identity server-side.
-- **Don't** call `supabase.auth` from UI components. Funnel everything through `supabase/api/auth.ts` so error handling and password rules are centralized.
-- **Don't** forget `detectSessionInUrl: false`. With it on, Supabase tries to parse the URL on every cold start in RN and logs warnings.
-- **Don't** ship `enable_confirmations = false` to production. It's only for local dev. Flip it before launch and verify the email template works.
+- **Don't** add an INSERT policy on `public.users`. The trigger is the only writer.
+- **Don't** use `getUser()` (network round-trip) for "am I logged in" — read the session.
+- **Don't** trust client about `is_anonymous`. RLS uses `auth.uid()` / `auth.jwt()` server-side.
+- **Don't** call `supabase.auth` from UI. Funnel through `supabase/api/auth.ts`.
+- **Don't** forget `detectSessionInUrl: false`.
+- **Don't** ship `enable_confirmations = false` to prod.
 
-## Quick checklist for a new app
+## Setup checklist
 
 1. `supabase/client.ts`: SecureStore adapter + AppState handler + `flowType: 'pkce'`.
-2. Migration with `public.users` table + `handle_new_user` trigger + matching `handle_user_email_change` trigger.
-3. RLS enabled on `users` with `select_self`, `select_authed`, `update_self`, `delete_self` policies (no INSERT).
-4. `AuthProvider` with `loading | authenticated | unauthenticated` status and root-level gate.
-5. `supabase/api/auth.ts` exporting `signIn`, `signUp`, `signInAnonymously`, `signOut`, `loggedInUser`. UI never touches `supabase.auth`.
-6. For OAuth: `app.json` scheme + `config.toml` redirect URLs + provider console callback all aligned.
+2. Migration with `public.users` + `handle_new_user` + `handle_user_email_change` triggers.
+3. RLS on `users` with `select_self`, `select_authed`, `update_self`, `delete_self` policies (no INSERT).
+4. `AuthProvider` with `loading | authenticated | unauthenticated` and root gate.
+5. `supabase/api/auth.ts` for all auth calls.
+6. OAuth: `app.json` scheme + `config.toml` redirects + provider console callback all aligned.
