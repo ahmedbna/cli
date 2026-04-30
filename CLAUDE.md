@@ -8,6 +8,8 @@ BNA CLI is an AI-powered CLI tool that generates full-stack mobile apps (Expo + 
 
 ## Commands
 
+Runtime requirement: **Node 20+** (build target is Node 18, but the CLI requires Node 20+ at runtime).
+
 ```bash
 # Build the CLI
 npm run build        # bundles via esbuild → dist/index.js
@@ -70,6 +72,8 @@ User prompt → orchestrator.runInitialBuildPipeline
   │       env vars → `npx convex env set …` → redeploy → `npx convex dev` (bg)
   │     · Supabase: prompt user for Project URL + anon key + any queued env
   │       vars → write all values to .env.local (no Docker required)
+  │     · All steps are best-effort — failure doesn't abort the build; Phase 3
+  │       still runs and the user gets a TODO to finish manually.
   │   └── session.setBackendDeployed(true) so /finalize skips these steps later
   └── Phase 3: frontendAgent     (10-25 rounds, writes theme/components/screens)
       └── Receives FINAL contracts from Phase 2, calls finish()

@@ -179,6 +179,19 @@ export function getSkillNamesForStack(stack: StackId): string[] {
 }
 
 /**
+ * Skills filtered to an explicit list of tech buckets — used to give a
+ * single agent (e.g. backend, frontend) access to only its slice of skills.
+ */
+export function getSkillMetadataForTechs(techs: Tech[]): SkillMetadata[] {
+  const allowed = new Set(techs);
+  return getSkillMetadata().filter((s) => allowed.has(s.tech));
+}
+
+export function getSkillNamesForTechs(techs: Tech[]): string[] {
+  return getSkillMetadataForTechs(techs).map((s) => s.name);
+}
+
+/**
  * Read the full SKILL.md content for a specific skill.
  * Strips YAML frontmatter so the agent only gets the instruction body.
  */
@@ -211,10 +224,27 @@ export function readSkills(skillNames: string[]): string {
  * to the stack the user selected. Only includes name + description.
  */
 export function generateSkillsSummary(stack: StackId): string {
-  const skills = getSkillMetadataForStack(stack);
+  return formatSkillsByTech(
+    getSkillMetadataForStack(stack),
+    techsForStack(stack),
+  );
+}
 
+/**
+ * Compact skills catalog filtered to an explicit list of tech buckets — for
+ * agents that only see a slice of the stack (frontend → expo, backend → its
+ * backend tech).
+ */
+export function generateSkillsSummaryForTechs(techs: Tech[]): string {
+  return formatSkillsByTech(getSkillMetadataForTechs(techs), techs);
+}
+
+function formatSkillsByTech(
+  skills: SkillMetadata[],
+  techOrder: Tech[],
+): string {
   if (skills.length === 0) {
-    return '(No skills available for this stack)';
+    return '(No skills available)';
   }
 
   const byTech = new Map<Tech, SkillMetadata[]>();
@@ -225,7 +255,7 @@ export function generateSkillsSummary(stack: StackId): string {
   }
 
   const sections: string[] = [];
-  for (const tech of techsForStack(stack)) {
+  for (const tech of techOrder) {
     const bucket = byTech.get(tech);
     if (!bucket || bucket.length === 0) continue;
     const lines = bucket.map((s) => `- **${s.name}**: ${s.description}`);

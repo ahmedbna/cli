@@ -22,49 +22,6 @@ Practical implications:
 - Use `viewFile` only for files you actually need to edit. `listDirectory` is rarely useful — the blueprint already lists screens and contracts.
 - The file journal is your safety net. Users can `/undo` so don't be paranoid about edits — but also don't spam writes.
 
-## Project Tree (already copied)
-
-```text
-project/
-├── app.json                    # update name, slug, scheme, ios.bundleIdentifier, android.package
-├── package.json
-├── tsconfig.json
-├── eslint.config.js
-├── app/
-│   ├── _layout.tsx             # exists — Convex + Auth providers
-│   ├── index.tsx               # exists — redirect to (home)
-│   └── (home)/                 # PROTECTED tab group
-│       ├── _layout.tsx         # NativeTabs
-│       ├── index.tsx           # Home tab
-│       └── settings.tsx        # Settings tab
-├── components/
-│   ├── auth/
-│   │   ├── authentication.tsx  # LOCKED — theme colors only
-│   │   └── singout.tsx         # LOCKED — theme colors only
-│   └── ui/
-│       ├── button.tsx          # restyle to match theme
-│       ├── spinner.tsx         # restyle
-│       ├── text.tsx            # CREATE for every app
-│       ├── input.tsx           # CREATE if needed
-│       └── ...                 # card, etc. as needed
-├── convex/
-│   ├── auth.config.ts          # LOCKED — never modify
-│   ├── auth.ts                 # LOCKED — never modify
-│   ├── http.ts                 # exists
-│   ├── schema.ts               # extend — keep ...authTables + users
-│   ├── users.ts                # exists
-│   └── _generated/             # auto — do not touch
-├── hooks/
-│   ├── useColor.ts             # use for all theme access
-│   └── useModeToggle.tsx
-├── theme/
-│   ├── colors.ts               # REWRITE with unique palette
-│   └── theme-provider.tsx
-└── assets/images/
-    ├── icon.png
-    └── splash-icon.png
-```
-
 ## Execution Model
 
 `npm install` runs in the BACKGROUND while you generate code. After you finish, the CLI auto-runs:

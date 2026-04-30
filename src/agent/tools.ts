@@ -21,7 +21,9 @@ import {
   readSkills,
   getSkillNames,
   getSkillNamesForStack,
+  getSkillNamesForTechs,
   type StackId,
+  type Tech,
 } from './skills.js';
 import type { InstallManager } from '../utils/installManager.js';
 import { Session } from '../session/session.js';
@@ -143,10 +145,23 @@ function toolDef(name: string, description: string, schema: z.ZodType) {
   return { name, description, input_schema: rest };
 }
 
-export const buildToolDefinitions = (stack?: StackId) => {
-  const availableSkills = stack
-    ? getSkillNamesForStack(stack)
-    : getSkillNames();
+export interface BuildToolOptions {
+  /** Restrict the lookupDocs catalog to skills under these tech buckets only.
+   *  Takes precedence over the stack-wide default. Used to give a single
+   *  agent (frontend → expo, backend → its backend tech) a narrower skill
+   *  surface than the full stack would imply. */
+  restrictTechs?: Tech[];
+}
+
+export const buildToolDefinitions = (
+  stack?: StackId,
+  opts?: BuildToolOptions,
+) => {
+  const availableSkills = opts?.restrictTechs
+    ? getSkillNamesForTechs(opts.restrictTechs)
+    : stack
+      ? getSkillNamesForStack(stack)
+      : getSkillNames();
   const lookupDocsSchema = buildLookupDocsSchema(availableSkills);
 
   return [

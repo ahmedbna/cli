@@ -358,6 +358,16 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     }
   }
 
+  // ── Collect Supabase credentials BEFORE any agent starts ───────────────
+  // For the supabase stack the URL + anon key are required for the client
+  // to talk to the project at all. We grab them up front so the values are
+  // already in .env.local by the time the orchestrator runs and so the
+  // backend setup phase doesn't ask again.
+  const preCollectedEnvVars =
+    stack === 'expo-supabase'
+      ? await collectSupabaseEnvUpfront(projectRoot)
+      : [];
+
   // ════════════════════════════════════════════════════════════════════════
   // Phase 2: Parallel install + first agent turn (via REPL)
   // ════════════════════════════════════════════════════════════════════════
@@ -406,6 +416,12 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
     authToken: freshToken,
     installManager,
   });
+
+  // Pre-collected env vars (currently: Supabase URL + anon key) shouldn't be
+  // re-prompted by the orchestrator's backend-setup pass.
+  if (preCollectedEnvVars.length > 0) {
+    session.setEnvVarsConfiguredDuringBuild(preCollectedEnvVars);
+  }
 
   // Track whether the first turn has happened — after it completes, we
   // offer to run the finalization pipeline.
@@ -892,4 +908,127 @@ function printReadyFooter(
       chalk.dim(' to quit.'),
   );
   console.log();
+}
+
+// ─── Supabase env vars collected upfront, before any agent runs ─────────────
+//
+// Returns the names of vars actually written to .env.local so the session can
+// mark them confirmed and the backend-setup phase doesn't re-prompt.
+async function collectSupabaseEnvUpfront(
+  projectRoot: string,
+): Promise<string[]> {
+  console.log();
+  log.divider();
+  log.info(chalk.bold.cyan('Supabase project credentials'));
+  log.info(
+    chalk.dim(
+      'Create a project at https://supabase.com (free tier is fine), then paste',
+    ),
+  );
+  log.info(
+    chalk.dim('the Project URL and anon key below. Both are visible under '),
+  );
+  log.info(chalk.dim('Project Settings → API in the Supabase dashboard.'));
+  log.info(
+    chalk.dim(
+      'Values are written to .env.local in this project before any agent runs.',
+    ),
+  );
+  console.log();
+
+  const set: string[] = [];
+  const lines: string[] = [];
+
+  const { url } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'url',
+      message:
+        chalk.yellow('EXPO_PUBLIC_SUPABASE_URL') +
+        chalk.dim(' (e.g. https://abc123.supabase.co — leave blank to skip):'),
+    },
+  ]);
+  if (url && url.trim()) {
+    lines.push(`EXPO_PUBLIC_SUPABASE_URL=${url.trim()}`);
+    set.push('EXPO_PUBLIC_SUPABASE_URL');
+  } else {
+    log.info(
+      chalk.dim('Skipped Supabase URL — add it to .env.local before running.'),
+    );
+  }
+
+  const { anonKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'anonKey',
+      message:
+        chalk.yellow('EXPO_PUBLIC_SUPABASE_ANON_KEY') +
+        chalk.dim(' (leave blank to skip):'),
+      mask: '*',
+    },
+  ]);
+  if (anonKey && anonKey.trim()) {
+    lines.push(`EXPO_PUBLIC_SUPABASE_ANON_KEY=${anonKey.trim()}`);
+    set.push('EXPO_PUBLIC_SUPABASE_ANON_KEY');
+  } else {
+    log.info(
+      chalk.dim(
+        'Skipped Supabase anon key — add it to .env.local before running.',
+      ),
+    );
+  }
+
+  if (lines.length > 0) {
+    const envFile = path.join(projectRoot, '.env.local');
+    const existing = fs.existsSync(envFile)
+      ? fs.readFileSync(envFile, 'utf-8')
+      : '';
+    fs.writeFileSync(envFile, mergeDotenv(existing, lines), 'utf-8');
+    log.success(`Wrote ${lines.length} value(s) to .env.local`);
+  }
+
+  log.divider();
+  console.log();
+  return set;
+}
+
+/**
+ * Merge new KEY=VALUE lines into an existing dotenv file, replacing keys
+ * that already exist and appending the rest. Comments / blank lines are
+ * preserved as-is. Mirrors the helper in session/backendSetup.ts.
+ */
+function mergeDotenv(existing: string, newLines: string[]): string {
+  const newMap = new Map<string, string>();
+  for (const line of newLines) {
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    newMap.set(line.slice(0, eq), line);
+  }
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of existing.split('\n')) {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      out.push(raw);
+      continue;
+    }
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) {
+      out.push(raw);
+      continue;
+    }
+    const key = trimmed.slice(0, eq);
+    if (newMap.has(key)) {
+      out.push(newMap.get(key)!);
+      seen.add(key);
+    } else {
+      out.push(raw);
+    }
+  }
+  for (const [key, value] of newMap) {
+    if (!seen.has(key)) out.push(value);
+  }
+  if (out.length > 0 && out[out.length - 1] !== '') out.push('');
+  return out.join('\n');
 }

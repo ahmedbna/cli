@@ -71,8 +71,11 @@ export async function runFrontendAgent(
   const { blueprint, projectRoot, installManager } = input;
   let authToken = input.authToken;
 
-  // Frontend gets the full filesystem tool belt (no askUser).
-  const allTools = buildToolDefinitions(blueprint.meta.stack);
+  // Frontend gets the full filesystem tool belt (no askUser). Skill catalog
+  // is locked to expo only — backend skills are off-limits at this phase.
+  const allTools = buildToolDefinitions(blueprint.meta.stack, {
+    restrictTechs: ['expo'],
+  });
   const tools = [...allTools, finishToolDefinition];
 
   const userMessage = buildFrontendUserMessage(blueprint, projectRoot);

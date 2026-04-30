@@ -240,56 +240,73 @@ async function runSupabaseSetup(
   const envVarsSet: string[] = [];
   const envLines: string[] = [];
 
-  console.log();
-  log.info(chalk.bold.cyan('Connecting to your Supabase project'));
-  log.info(
-    chalk.dim(
-      'Create a project at https://supabase.com (free tier is fine), then paste',
-    ),
-  );
-  log.info(
-    chalk.dim('the Project URL and anon key below. Both are visible under '),
-  );
-  log.info(chalk.dim('Project Settings → API in the Supabase dashboard.'));
-  console.log();
+  // Supabase URL + anon key are collected upfront in build.ts before any
+  // agent runs and marked confirmed on the session. Skip re-prompting here
+  // when they are already in place.
+  const confirmed = new Set(session.getConfirmedEnvVars());
+  const needUrl = !confirmed.has('EXPO_PUBLIC_SUPABASE_URL');
+  const needAnon = !confirmed.has('EXPO_PUBLIC_SUPABASE_ANON_KEY');
 
-  const { url } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'url',
-      message:
-        chalk.yellow('Supabase Project URL') +
-        chalk.dim(' (e.g. https://abc123.supabase.co — leave blank to skip):'),
-    },
-  ]);
-  if (url && url.trim()) {
-    envLines.push(`EXPO_PUBLIC_SUPABASE_URL=${url.trim()}`);
-    session.markEnvVarConfirmed('EXPO_PUBLIC_SUPABASE_URL');
-    envVarsSet.push('EXPO_PUBLIC_SUPABASE_URL');
-  } else {
+  if (needUrl || needAnon) {
+    console.log();
+    log.info(chalk.bold.cyan('Connecting to your Supabase project'));
     log.info(
-      chalk.dim('Skipped Supabase URL — add it to .env.local before running.'),
+      chalk.dim(
+        'Create a project at https://supabase.com (free tier is fine), then paste',
+      ),
     );
+    log.info(
+      chalk.dim('the Project URL and anon key below. Both are visible under '),
+    );
+    log.info(chalk.dim('Project Settings → API in the Supabase dashboard.'));
+    console.log();
   }
 
-  const { anonKey } = await inquirer.prompt([
-    {
-      type: 'password',
-      name: 'anonKey',
-      message:
-        chalk.yellow('Supabase anon (public) key') +
-        chalk.dim(' (leave blank to skip):'),
-      mask: '*',
-    },
-  ]);
-  if (anonKey && anonKey.trim()) {
-    envLines.push(`EXPO_PUBLIC_SUPABASE_ANON_KEY=${anonKey.trim()}`);
-    session.markEnvVarConfirmed('EXPO_PUBLIC_SUPABASE_ANON_KEY');
-    envVarsSet.push('EXPO_PUBLIC_SUPABASE_ANON_KEY');
-  } else {
-    log.info(
-      chalk.dim('Skipped Supabase anon key — add it to .env.local before running.'),
-    );
+  if (needUrl) {
+    const { url } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'url',
+        message:
+          chalk.yellow('Supabase Project URL') +
+          chalk.dim(
+            ' (e.g. https://abc123.supabase.co — leave blank to skip):',
+          ),
+      },
+    ]);
+    if (url && url.trim()) {
+      envLines.push(`EXPO_PUBLIC_SUPABASE_URL=${url.trim()}`);
+      session.markEnvVarConfirmed('EXPO_PUBLIC_SUPABASE_URL');
+      envVarsSet.push('EXPO_PUBLIC_SUPABASE_URL');
+    } else {
+      log.info(
+        chalk.dim('Skipped Supabase URL — add it to .env.local before running.'),
+      );
+    }
+  }
+
+  if (needAnon) {
+    const { anonKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'anonKey',
+        message:
+          chalk.yellow('Supabase anon (public) key') +
+          chalk.dim(' (leave blank to skip):'),
+        mask: '*',
+      },
+    ]);
+    if (anonKey && anonKey.trim()) {
+      envLines.push(`EXPO_PUBLIC_SUPABASE_ANON_KEY=${anonKey.trim()}`);
+      session.markEnvVarConfirmed('EXPO_PUBLIC_SUPABASE_ANON_KEY');
+      envVarsSet.push('EXPO_PUBLIC_SUPABASE_ANON_KEY');
+    } else {
+      log.info(
+        chalk.dim(
+          'Skipped Supabase anon key — add it to .env.local before running.',
+        ),
+      );
+    }
   }
 
   // Other env vars the agents queued (excluding the two we just handled)
@@ -352,11 +369,13 @@ async function runSupabaseSetup(
     log.success(`Wrote ${envLines.length} value(s) to .env.local`);
   }
 
-  // We consider Supabase "deployed" as long as the user provided both the URL
-  // and the anon key — the project itself is hosted, the user just needs the
-  // app to be able to reach it.
-  const deployed = envVarsSet.includes('EXPO_PUBLIC_SUPABASE_URL') &&
-    envVarsSet.includes('EXPO_PUBLIC_SUPABASE_ANON_KEY');
+  // We consider Supabase "deployed" as long as the URL + anon key are in
+  // place — either confirmed upfront in build.ts or captured during this
+  // setup pass.
+  const finalConfirmed = new Set(session.getConfirmedEnvVars());
+  const deployed =
+    finalConfirmed.has('EXPO_PUBLIC_SUPABASE_URL') &&
+    finalConfirmed.has('EXPO_PUBLIC_SUPABASE_ANON_KEY');
 
   console.log();
   log.divider();

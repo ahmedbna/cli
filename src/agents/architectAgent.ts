@@ -1,13 +1,14 @@
 // src/agents/architectAgent.ts
 //
 // Phase 1 agent. Takes the user's prompt + stack and produces a structured
-// Blueprint. Has NO filesystem tools — it cannot write code. This is a
-// hard architectural boundary, not a soft suggestion.
+// Blueprint. Has NO filesystem tools and NO skill access — it cannot write
+// code and cannot read implementation skills. This is a hard architectural
+// boundary, not a soft suggestion: the architect plans from its own model
+// knowledge of the stack, leaving implementation skills for the Backend
+// and Frontend Builder agents to load.
 //
 // Tools available:
 //   - proposeBlueprint  : terminal tool; submits the final Blueprint
-//   - lookupDocs        : optional, if the architect needs to consult skills
-//                         while designing (rare but useful for e.g. presence)
 //   - askUser           : ONE clarification permitted per architect run
 //
 // Token budget: typically 15-30K input. The architect runs in a fresh
@@ -20,7 +21,6 @@ import {
   fetchStreamWithRetry,
   extractErrorMessage,
 } from '../utils/apiClient.js';
-import { readSkill, getSkillNamesForStack } from '../agent/skills.js';
 import { emit, isUiActive } from '../ui/events.js';
 import { log } from '../utils/logger.js';
 import { startSpinner } from '../utils/liveSpinner.js';
@@ -155,9 +155,7 @@ const BlueprintSchema = z.object({
 
 // ─── Tool definitions sent to the model ───────────────────────────────────
 
-function buildArchitectTools(stack: StackId) {
-  const skills = getSkillNamesForStack(stack);
-
+function buildArchitectTools(_stack: StackId) {
   return [
     {
       name: 'proposeBlueprint',
@@ -333,24 +331,6 @@ function buildArchitectTools(stack: StackId) {
       },
     },
     {
-      name: 'lookupDocs',
-      description:
-        'Load a skill doc to inform your design. Available: ' +
-        skills.join(', '),
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          skills: {
-            type: 'array',
-            items: { type: 'string' },
-            minItems: 1,
-            maxItems: 4,
-          },
-        },
-        required: ['skills'],
-      },
-    },
-    {
       name: 'askUser',
       description:
         'Ask ONE clarifying question if a critical requirement is genuinely ambiguous. ' +
@@ -481,16 +461,6 @@ export async function runArchitectAgent(
             type: 'tool_result',
             tool_use_id: block.id,
             content: 'Blueprint received. Validating...',
-          });
-        } else if (block.name === 'lookupDocs') {
-          const skills: string[] = block.input.skills ?? [];
-          const content = skills
-            .map((s) => `## ${s}\n\n${readSkill(s)}`)
-            .join('\n\n---\n\n');
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content,
           });
         } else if (block.name === 'askUser') {
           askUserCall = {

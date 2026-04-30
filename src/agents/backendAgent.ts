@@ -140,6 +140,16 @@ const finishBackendTool = {
   },
 };
 
+// ─── Stack → backend tech mapping ─────────────────────────────────────────
+
+function backendTechForStack(stack: string): string | null {
+  // The stack id is `<frontend>-<backend>`; the backend tech is the suffix.
+  // Stacks without a backend (e.g. plain `expo`) return null and the backend
+  // agent isn't invoked anyway.
+  const parts = stack.split('-');
+  return parts.length >= 2 ? parts[parts.length - 1] : null;
+}
+
 // ─── Main entry ────────────────────────────────────────────────────────────
 
 export async function runBackendAgent(
@@ -148,8 +158,14 @@ export async function runBackendAgent(
   const { blueprint, projectRoot, installManager } = input;
   let authToken = input.authToken;
 
+  // Backend agent only sees skills for ITS backend tech — never expo skills.
+  // expo-convex → ['convex']; expo-supabase → ['supabase'].
+  const backendTech = backendTechForStack(blueprint.meta.stack);
+
   // Backend agent gets a SUBSET of tools — no exploration tools.
-  const allTools = buildToolDefinitions(blueprint.meta.stack).filter((t) =>
+  const allTools = buildToolDefinitions(blueprint.meta.stack, {
+    restrictTechs: backendTech ? [backendTech] : [],
+  }).filter((t) =>
     [
       'createFile',
       'editFile',

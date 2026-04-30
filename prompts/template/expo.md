@@ -21,42 +21,6 @@ Practical implications:
 - If a change requires a new screen or data type, **add it incrementally** to fit the existing design.
 - Use `viewFile` only for files you actually need to edit. The blueprint already lists screens.
 
-## Project Tree (already copied)
-
-```text
-project/
-├── app.json                    # update name, slug, scheme, ios.bundleIdentifier, android.package
-├── package.json
-├── tsconfig.json
-├── eslint.config.js
-├── app/
-│   ├── _layout.tsx             # exists
-│   ├── index.tsx               # exists — redirect to (home)
-│   └── (home)/                 # PROTECTED tab group
-│       ├── _layout.tsx         # NativeTabs
-│       ├── index.tsx           # Home tab
-│       └── settings.tsx        # Settings tab
-├── components/
-│   ├── auth/                   # local-only auth screens — restyle only
-│   │   ├── authentication.tsx  # LOCKED — theme colors only
-│   │   └── singout.tsx         # LOCKED — theme colors only
-│   └── ui/
-│       ├── button.tsx          # restyle to match theme
-│       ├── spinner.tsx         # restyle
-│       ├── text.tsx            # CREATE for every app
-│       ├── input.tsx           # CREATE if needed
-│       └── ...
-├── hooks/
-│   ├── useColor.ts             # use for all theme access
-│   └── useModeToggle.tsx
-├── theme/
-│   ├── colors.ts               # REWRITE with unique palette
-│   └── theme-provider.tsx
-└── assets/images/
-    ├── icon.png
-    └── splash-icon.png
-```
-
 ## Execution Model
 
 `npm install` runs in the BACKGROUND while you generate code. After you finish, the CLI auto-runs:
