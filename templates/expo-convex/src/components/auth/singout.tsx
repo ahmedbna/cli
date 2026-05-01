@@ -20,10 +20,8 @@ export const SignOutButton = () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     try {
       await signOut();
-      router.dismissAll();
     } catch (error) {
       console.error('Sign out error:', error);
-      router.dismissAll();
     }
   };
 

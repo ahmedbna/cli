@@ -7,20 +7,19 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
+      "icon": "./assets/bna.icon",
       "supportsTablet": true,
-      "bundleIdentifier": "com.ahmedbna.ai"
+      "bundleIdentifier": "com.bna.ai"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#FAD40B",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png"
+        "foregroundImage": "./assets/images/logo.png",
+        "backgroundImage": "./assets/images/logo.png"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.ahmedbna.ai"
+      "package": "com.bna.ai"
     },
     "plugins": [
       "expo-router",
@@ -28,7 +27,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#FAD40B",

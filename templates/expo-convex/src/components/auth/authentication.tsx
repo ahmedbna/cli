@@ -203,7 +203,7 @@ export const Authentication = () => {
         {/* Logo */}
         <Image
           style={{ width: 110, height: 110 }}
-          source={require('../../assets/images/splash-icon.png')}
+          source={require('../../../assets/images/logo.png')}
           contentFit='contain'
           transition={600}
         />

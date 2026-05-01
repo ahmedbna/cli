@@ -7,7 +7,7 @@ import { useColor } from '@/hooks/useColor';
 import { Button } from '@/components/ui/button';
 import { useModeToggle } from '@/hooks/useModeToggle';
 
-export default function SettingsScreen() {
+export default function ProfileScreen() {
   const text = useColor('text');
   const user = useQuery(api.auth.loggedInUser);
   const { mode, toggleMode } = useModeToggle();
